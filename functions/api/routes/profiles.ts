@@ -39,13 +39,22 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
         if (activeSubscriptions.length > 0) {
             if (airportOptions.random) {
-                const randomIndex = Math.floor(Math.random() * activeSubscriptions.length);
-                const randomSub = activeSubscriptions[randomIndex];
-                const result = await fetchSubscriptionContent(randomSub.url, timeout);
-                if (result.success) {
-                    nodesSourceSub = randomSub;
-                    subContent = result.content;
+                // Fisher-Yates shuffle algorithm
+                for (let i = activeSubscriptions.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [activeSubscriptions[i], activeSubscriptions[j]] = [activeSubscriptions[j], activeSubscriptions[i]];
                 }
+                
+                // Now, perform a serial fetch on the shuffled list
+                for (const sub of activeSubscriptions) {
+                    const result = await fetchSubscriptionContent(sub.url, timeout);
+                    if (result.success && result.content) {
+                        nodesSourceSub = sub;
+                        subContent = result.content;
+                        break; // Found a working one, stop searching
+                    }
+                }
+
             } else if (airportOptions.polling) {
                 const mode = airportOptions.polling_mode || 'hourly';
 
@@ -58,44 +67,40 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         }
                         groupedSubs[groupId].push(sub);
                     }
-                
+
                     const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
-                
+
+                    // Groups are fetched in parallel, but subscriptions within a group are fetched serially.
                     const pollingPromises = Object.entries(groupedSubs).map(async ([groupId, subsInGroup]) => {
                         const startIndex = groupPollingState[groupId] || 0;
-                    
-                        // 1. Create an array of subscriptions in polling order, with their original index
-                        const orderedSubsWithIndex: { sub: any; originalIndex: number }[] = [];
+
+                        // Create an array of subscriptions in polling order
+                        const orderedSubs: { sub: any; originalIndex: number }[] = [];
                         for (let i = 0; i < subsInGroup.length; i++) {
                             const originalIndex = (startIndex + i) % subsInGroup.length;
-                            orderedSubsWithIndex.push({ sub: subsInGroup[originalIndex], originalIndex });
+                            orderedSubs.push({ sub: subsInGroup[originalIndex], originalIndex });
                         }
-                    
-                        // 2. Fire off all fetch requests in parallel
-                        const promises = orderedSubsWithIndex.map(item => fetchSubscriptionContent(item.sub.url, timeout));
-                    
-                        // 3. Wait for all promises to settle
-                        const results = await Promise.all(promises);
-                    
-                        // 4. Find the first successful result in the original polling order
-                        for (let i = 0; i < results.length; i++) {
-                            const result = results[i];
+
+                        // Serially fetch within the group
+                        for (const item of orderedSubs) {
+                            const result = await fetchSubscriptionContent(item.sub.url, timeout);
                             if (result.success && result.content) {
-                                const successfulItem = orderedSubsWithIndex[i];
                                 if (!isDryRun) {
-                                    // Update polling index based on the successful subscription's original position
-                                    const nextIndex = (successfulItem.originalIndex + 1) % subsInGroup.length;
+                                    const nextIndex = (item.originalIndex + 1) % subsInGroup.length;
                                     groupPollingState[groupId] = nextIndex;
                                 }
-                                return { sub: successfulItem.sub, content: result.content };
+                                return { sub: item.sub, content: result.content }; // Success, return result for this group
                             }
                         }
-                    
+                        
+                        if (!isDryRun) {
+                            groupPollingState[groupId] = 0;
+                        }
                         return null; // No successful subscription in this group
                     });
-                
+
                     const successfulPolls = (await Promise.all(pollingPromises)).filter(p => p !== null);
-                
+
                     if (successfulPolls.length > 0) {
                         const allPolledNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; })[] = [];
                         for (const poll of successfulPolls) {
@@ -103,34 +108,27 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                                 let nodes = parseSubscriptionContent(poll.content);
                                 let combinedRules = [];
 
-                                // Fetch and add group rules first
                                 if (poll.sub.group_id) {
                                     const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.group_id, userId).all();
-                                    if (groupRules) {
-                                        combinedRules.push(...groupRules);
-                                    }
+                                    if (groupRules) combinedRules.push(...groupRules);
                                 }
 
-                                // Fetch and add subscription-specific rules
                                 const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.id, userId).all();
-                                if (subRules) {
-                                    combinedRules.push(...subRules);
-                                }
+                                if (subRules) combinedRules.push(...subRules);
 
                                 if (combinedRules.length > 0) {
                                     nodes = applySubscriptionRules(nodes, combinedRules);
                                 }
                                 
-                                allPolledNodes.push(...nodes.map(node => ({ ...node, subscriptionName: poll.sub.name })));
+                                const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: poll.sub.name }));
+                                allPolledNodes.push(...nodesWithSubName);
                             }
                         }
                         allNodes.push(...allPolledNodes);
-                
+
                         if (!isDryRun) {
                              executionCtx.waitUntil(
-                                env.DB.prepare(
-                                    `UPDATE profiles SET group_polling_indices = ? WHERE id = ?`
-                                ).bind(JSON.stringify(groupPollingState), profile.id).run()
+                                env.DB.prepare(`UPDATE profiles SET group_polling_indices = ? WHERE id = ?`).bind(JSON.stringify(groupPollingState), profile.id).run()
                             );
                         }
                     }
@@ -139,7 +137,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                 
                 } else if (mode === 'request') {
                     const startIndex = profile.polling_index || 0;
-                    let found = false;
+                    
                     for (let i = 0; i < activeSubscriptions.length; i++) {
                         const currentIndex = (startIndex + i) % activeSubscriptions.length;
                         const currentSub = activeSubscriptions[currentIndex];
@@ -148,7 +146,6 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         if (result.success && result.content) {
                             nodesSourceSub = currentSub;
                             subContent = result.content;
-                            found = true;
 
                             if (!isDryRun) {
                                 const nextIndex = (currentIndex + 1) % activeSubscriptions.length;
@@ -158,7 +155,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                                     ).bind(nextIndex, currentSub.id, result.content, new Date().toISOString(), profile.id).run()
                                 );
                             }
-                            break;
+                            break; // Found a working one, stop searching
                         } else {
                             if ('error' in result) {
                                 console.error(`Polling subscription ${currentSub.id} failed: ${result.error}`);
@@ -166,14 +163,12 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         }
                     }
 
-                    if (!found) {
+                    if (!subContent) {
                         console.warn(`All polling subscriptions failed for profile ${profile.id}. Using fallback.`);
                         if (profile.last_successful_subscription_content) {
-                            // When using fallback, directly parse the stored content into nodes.
                             let fallbackNodes = parseSubscriptionContent(profile.last_successful_subscription_content);
                             const fallbackSubId = profile.last_successful_subscription_id;
                             
-                            // Apply rules if the original subscription ID is known
                             if (fallbackSubId) {
                                 const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(fallbackSubId, userId).all();
                                 if (rules && rules.length > 0) {
@@ -184,7 +179,6 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                             const nodesWithSubName = fallbackNodes.map(node => ({ ...node, subscriptionName: 'Last Successful (Fallback)' }));
                             allNodes.push(...nodesWithSubName);
                         }
-                        // Clear subContent and nodesSourceSub to prevent the block below from running
                         subContent = null;
                         nodesSourceSub = null;
                     }
@@ -199,26 +193,19 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                     }
                 }
             } else if (airportOptions.use_all) {
-                // Use All: Iterate through all subscriptions and combine their nodes.
                 const promises = activeSubscriptions.map(async (sub) => {
                     const result = await fetchSubscriptionContent(sub.url, timeout);
                     if (result.success && result.content) {
                         let nodes = parseSubscriptionContent(result.content);
                         let combinedRules = [];
 
-                        // Fetch and add group rules first
                         if (sub.group_id) {
                             const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.group_id, userId).all();
-                            if (groupRules) {
-                                combinedRules.push(...groupRules);
-                            }
+                            if (groupRules) combinedRules.push(...groupRules);
                         }
 
-                        // Fetch and add subscription-specific rules
                         const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                        if (subRules) {
-                            combinedRules.push(...subRules);
-                        }
+                        if (subRules) combinedRules.push(...subRules);
 
                         if (combinedRules.length > 0) {
                             nodes = applySubscriptionRules(nodes, combinedRules);
@@ -229,7 +216,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         if ('error' in result) {
                             console.error(`Failed to fetch subscription ${sub.id} in 'use_all' mode: ${result.error}`);
                         }
-                        return []; // Return an empty array for failed fetches
+                        return [];
                     }
                 });
             
@@ -237,27 +224,23 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                 for (const nodeArray of nodeArrays) {
                     allNodes.push(...nodeArray);
                 }
-                // Clear these to prevent the block below from running
                 subContent = null;
                 nodesSourceSub = null;
             } else {
-                // Smart Fetch: Iterate through subscriptions sequentially and stop at the first success.
-                let found = false;
+                // Smart Fetch: Default behavior, serial fetch
                 for (const sub of activeSubscriptions) {
                     const result = await fetchSubscriptionContent(sub.url, timeout);
                     if (result.success && result.content) {
                         nodesSourceSub = sub;
                         subContent = result.content;
-                        found = true;
-                        // On first success, break the loop
-                        break;
+                        break; // Found a working one, stop searching
                     } else {
                         if ('error' in result) {
                             console.error(`Failed to fetch subscription ${sub.id}: ${result.error}`);
                         }
                     }
                 }
-                if (!found) {
+                if (!subContent) {
                     console.warn(`All subscriptions failed for profile ${profile.id}.`);
                 }
             }
@@ -269,19 +252,13 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
             const fullSub = subscriptions.find(s => s.id === nodesSourceSub.id);
 
-            // Fetch and add group rules first
             if (fullSub && fullSub.group_id) {
                 const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(fullSub.group_id, userId).all();
-                if (groupRules) {
-                    combinedRules.push(...groupRules);
-                }
+                if (groupRules) combinedRules.push(...groupRules);
             }
 
-            // Fetch and add subscription-specific rules
             const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(nodesSourceSub.id, userId).all();
-            if (subRules) {
-                combinedRules.push(...subRules);
-            }
+            if (subRules) combinedRules.push(...subRules);
 
             if (combinedRules.length > 0) {
                 nodes = applySubscriptionRules(nodes, combinedRules);
@@ -293,7 +270,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
     }
 
     if (content.node_ids && content.node_ids.length > 0) {
-        const batchSize = 50; // Set a batch size to avoid hitting SQL variable limits
+        const batchSize = 50;
         let manualNodes: any[] = [];
         
         for (let i = 0; i < content.node_ids.length; i += batchSize) {
@@ -398,7 +375,6 @@ profiles.get('/', async (c) => {
     const expandedResults = results.map(profile => {
         try {
             const content = JSON.parse(profile.content || '{}');
-            // Spread profile first, then content, so content values overwrite table's root column values
             return { ...profile, ...content };
         } catch (e) {
             console.error(`Failed to parse content for profile ${profile.id}:`, e);
@@ -419,12 +395,10 @@ profiles.post('/', async (c) => {
         return c.json({ success: false, message: 'Profile name is required.' }, 400);
     }
 
-    // Explicitly separate top-level fields from content fields
     const name = body.name.trim();
     const alias = body.alias || null;
     const content = JSON.parse(body.content || '{}');
 
-    // Rebuild a clean content payload, excluding any top-level fields
     const contentPayload = {
         subscription_ids: content.subscription_ids,
         node_ids: content.node_ids,
@@ -451,7 +425,6 @@ profiles.get('/:id', async (c) => {
 
     try {
         const content = JSON.parse(profile.content || '{}');
-        // Spread profile first, then content, so content values overwrite table's root column values
         const expandedProfile = { ...profile, ...content };
         return c.json({ success: true, data: expandedProfile });
     } catch (e) {
@@ -470,12 +443,10 @@ profiles.put('/:id', async (c) => {
         return c.json({ success: false, message: 'Profile name is required.' }, 400);
     }
 
-    // Explicitly separate top-level fields from content fields
     const name = body.name.trim();
     const alias = body.alias || null;
     const content = JSON.parse(body.content || '{}');
 
-    // Rebuild a clean content payload, excluding any top-level fields
     const contentPayload = {
         subscription_ids: content.subscription_ids,
         node_ids: content.node_ids,
@@ -500,7 +471,5 @@ profiles.delete('/:id', async (c) => {
     await c.env.DB.prepare('DELETE FROM profiles WHERE id = ? AND user_id = ?').bind(id, user.id).run();
     return c.json({ success: true });
 });
-
-// All other routes below this line require auth
 
 export default profiles;
