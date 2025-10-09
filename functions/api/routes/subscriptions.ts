@@ -467,7 +467,6 @@ subscriptions.post('/preview', async (c) => {
     }
 
     try {
-        console.log(`[PREVIEW] Starting preview for URL: ${url}`);
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'clash-verge',
@@ -490,12 +489,33 @@ subscriptions.post('/preview', async (c) => {
         let finalNodes = parseSubscriptionContent(content);
 
         if (apply_rules && subscription_id) {
-            const { results: rules } = await c.env.DB.prepare(
+            let combinedRules = [];
+
+            // Fetch group_id for the subscription
+            const subscription = await c.env.DB.prepare(
+                'SELECT group_id FROM subscriptions WHERE id = ? AND user_id = ?'
+            ).bind(subscription_id, user.id).first<{ group_id: string | null }>();
+
+            // Fetch and add group rules first
+            if (subscription && subscription.group_id) {
+                const { results: groupRules } = await c.env.DB.prepare(
+                    'SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC'
+                ).bind(subscription.group_id, user.id).all();
+                if (groupRules) {
+                    combinedRules.push(...groupRules);
+                }
+            }
+
+            // Fetch and add subscription-specific rules
+            const { results: subRules } = await c.env.DB.prepare(
                 'SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC'
             ).bind(subscription_id, user.id).all();
+            if (subRules) {
+                combinedRules.push(...subRules);
+            }
 
-            if (rules && rules.length > 0) {
-                finalNodes = applySubscriptionRules(finalNodes, rules);
+            if (combinedRules.length > 0) {
+                finalNodes = applySubscriptionRules(finalNodes, combinedRules);
             }
         }
         

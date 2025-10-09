@@ -102,11 +102,11 @@ const updateSettings = reactive({
   expiringTrafficThresholdGB: 1,
 })
 
-// For Subscription Rules
+// For Subscription & Group Rules (Unified)
 const showRulesModal = ref(false)
 const rulesLoading = ref(false)
-const currentSubscriptionForRules = ref<Subscription | null>(null)
-const subscriptionRules = ref<import('@/types').SubscriptionRule[]>([])
+const currentRuleContext = ref<{ type: 'subscription' | 'group', entity: Subscription | import('@/stores/subscriptionGroups').SubscriptionGroup } | null>(null)
+const rules = ref<import('@/types').SubscriptionRule[]>([])
 const showRuleFormModal = ref(false)
 const ruleFormRef = ref<FormInst | null>(null)
 const editingRule = ref<import('@/types').SubscriptionRule | null>(null)
@@ -124,7 +124,14 @@ const ruleFormState = reactive({
   regex: '',
 })
 
-const ruleModalTitle = computed(() => (editingRule.value ? '编辑规则' : '新增规则'))
+const ruleModalTitle = computed(() => {
+  if (!currentRuleContext.value) return '规则管理'
+  const contextName = currentRuleContext.value.type === 'subscription' ? '订阅' : '分组'
+  const entityName = currentRuleContext.value.entity.name
+  return `${contextName}规则 - ${entityName}`
+})
+const ruleFormTitle = computed(() => (editingRule.value ? '编辑规则' : '新增规则'))
+
 const ruleTypeOptions = [
   { label: '按名称关键词过滤 (保留)', value: 'filter_by_name_keyword' },
   { label: '按名称关键词排除', value: 'exclude_by_name_keyword' },
@@ -788,6 +795,7 @@ const getDropdownOptions = (group: import('@/stores/subscriptionGroups').Subscri
     { label: '更新本组', key: 'update-group' },
     { label: '一键去重', key: 'deduplicate-group' },
     { label: '导出订阅', key: 'export-group' },
+    { label: '分组规则', key: 'group-rules' },
     { type: 'divider', key: 'd1' },
     { label: '批量替换', key: 'batch-replace-group' },
     { label: '重命名', key: 'rename' },
@@ -814,6 +822,9 @@ const handleGroupAction = (key: string) => {
       break
     case 'batch-replace-group':
       openBatchReplaceModal(group.id)
+      break
+    case 'group-rules':
+      onManageRules(group, 'group')
       break
     case 'rename':
       editingGroup.value = group
@@ -1012,13 +1023,17 @@ const handleBatchReplace = async () => {
 }
 
 
-// --- Subscription Rules Logic ---
-const fetchRules = async (subscriptionId: string) => {
+// --- Unified Rules Logic ---
+const fetchRules = async () => {
+  if (!currentRuleContext.value) return
   rulesLoading.value = true
+  const { type, entity } = currentRuleContext.value
+  const baseUrl = type === 'subscription' ? '/subscriptions' : '/subscription-groups'
+  
   try {
-    const response = await api.get<ApiResponse<import('@/types').SubscriptionRule[]>>(`/subscriptions/${subscriptionId}/rules`)
+    const response = await api.get<ApiResponse<import('@/types').SubscriptionRule[]>>(`${baseUrl}/${entity.id}/rules`)
     if (response.data.success) {
-      subscriptionRules.value = response.data.data || []
+      rules.value = response.data.data || []
     } else {
       message.error(response.data.message || '获取规则列表失败')
     }
@@ -1029,15 +1044,17 @@ const fetchRules = async (subscriptionId: string) => {
   }
 }
 
-const onManageRules = (sub: Subscription) => {
-  currentSubscriptionForRules.value = sub
+const onManageRules = (entity: Subscription | import('@/stores/subscriptionGroups').SubscriptionGroup, type: 'subscription' | 'group') => {
+  currentRuleContext.value = { type, entity }
   showRulesModal.value = true
-  fetchRules(sub.id)
+  fetchRules()
 }
 
 const handleDeleteRule = (rule: import('@/types').SubscriptionRule) => {
-  if (!currentSubscriptionForRules.value) return
-  const subId = currentSubscriptionForRules.value.id
+  if (!currentRuleContext.value) return
+  const { type, entity } = currentRuleContext.value
+  const baseUrl = type === 'subscription' ? '/subscriptions' : '/subscription-groups'
+
   dialog.warning({
     title: '确认删除规则',
     content: `确定要删除规则 "${rule.name}" 吗？`,
@@ -1045,10 +1062,10 @@ const handleDeleteRule = (rule: import('@/types').SubscriptionRule) => {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        const response = await api.delete<ApiResponse>(`/subscriptions/${subId}/rules/${rule.id}`)
+        const response = await api.delete<ApiResponse>(`${baseUrl}/${entity.id}/rules/${rule.id}`)
         if (response.data.success) {
           message.success('规则删除成功')
-          fetchRules(subId)
+          fetchRules()
         } else {
           message.error(response.data.message || '删除失败')
         }
@@ -1095,8 +1112,10 @@ const openRuleFormModal = (rule: import('@/types').SubscriptionRule | null) => {
 }
 
 const handleSaveRule = async () => {
-  if (!currentSubscriptionForRules.value) return
-  const subId = currentSubscriptionForRules.value.id
+  if (!currentRuleContext.value) return
+  const { type, entity } = currentRuleContext.value
+  const baseUrl = type === 'subscription' ? '/subscriptions' : '/subscription-groups'
+  
   ruleSaveLoading.value = true
   try {
     let jsonValue = {}
@@ -1123,14 +1142,14 @@ const handleSaveRule = async () => {
     }
     let response;
     if (editingRule.value) {
-      response = await api.put<ApiResponse>(`/subscriptions/${subId}/rules/${editingRule.value.id}`, payload)
+      response = await api.put<ApiResponse>(`${baseUrl}/${entity.id}/rules/${editingRule.value.id}`, payload)
     } else {
-      response = await api.post<ApiResponse>(`/subscriptions/${subId}/rules`, payload)
+      response = await api.post<ApiResponse>(`${baseUrl}/${entity.id}/rules`, payload)
     }
     if (response.data.success) {
       message.success(editingRule.value ? '规则更新成功' : '规则创建成功')
       showRuleFormModal.value = false
-      fetchRules(subId)
+      fetchRules()
     } else {
       message.error(response.data.message || '保存失败')
     }
@@ -1166,11 +1185,13 @@ const createRuleColumns = ({ onEdit, onDelete }: {
         return h(NSwitch, {
           value: row.enabled === 1,
           onUpdateValue: async (value) => {
-            if (!currentSubscriptionForRules.value) return
-            const subId = currentSubscriptionForRules.value.id
+            if (!currentRuleContext.value) return
+            const { type, entity } = currentRuleContext.value
+            const baseUrl = type === 'subscription' ? '/subscriptions' : '/subscription-groups'
+            
             row.enabled = value ? 1 : 0
             try {
-              await api.put<ApiResponse>(`/subscriptions/${subId}/rules/${row.id}`, { enabled: value })
+              await api.put<ApiResponse>(`${baseUrl}/${entity.id}/rules/${row.id}`, { enabled: value })
               message.success('状态更新成功')
             } catch (e) {
               message.error('状态更新失败')
@@ -1206,7 +1227,7 @@ const columns = createColumns({
     onUpdate: handleUpdate,
     onDelete: handleDelete,
     onPreviewNodes: handlePreviewNodes,
-    onManageRules: onManageRules,
+    onManageRules: (sub) => onManageRules(sub, 'subscription'),
 })
 
 onMounted(() => {
@@ -1384,7 +1405,7 @@ onMounted(() => {
     <n-modal
       v-model:show="showRulesModal"
       preset="card"
-      :title="`规则管理 - ${currentSubscriptionForRules?.name}`"
+      :title="ruleModalTitle"
       style="width: 900px;"
       :mask-closable="false"
     >
@@ -1393,7 +1414,7 @@ onMounted(() => {
       </n-space>
       <n-data-table
         :columns="ruleColumns"
-        :data="subscriptionRules"
+        :data="rules"
         :loading="rulesLoading"
         :bordered="false"
       />
@@ -1403,7 +1424,7 @@ onMounted(() => {
       v-model:show="showRuleFormModal"
       :mask-closable="false"
       preset="dialog"
-      :title="ruleModalTitle"
+      :title="ruleFormTitle"
       positive-text="保存"
       negative-text="取消"
       :positive-button-props="{ loading: ruleSaveLoading }"

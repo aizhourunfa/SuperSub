@@ -69,6 +69,90 @@ subscriptionGroups.put('/:id', manualAuthMiddleware, async (c) => {
     }
 });
 
+// --- Group Rules CRUD ---
+
+// GET /api/subscription-groups/:id/rules - 获取分组规则
+subscriptionGroups.get('/:id/rules', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { id } = c.req.param();
+    const { results } = await c.env.DB.prepare(
+        'SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? ORDER BY sort_order ASC'
+    ).bind(id, user.id).all();
+    return c.json({ success: true, data: results });
+});
+
+// POST /api/subscription-groups/:id/rules - 创建分组规则
+subscriptionGroups.post('/:id/rules', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { id: group_id } = c.req.param();
+    const { name, type, value, enabled } = await c.req.json<any>();
+
+    if (!name || !type || !value) {
+        return c.json({ success: false, message: '缺少必要参数' }, 400);
+    }
+
+    const now = new Date().toISOString();
+    try {
+        await c.env.DB.prepare(
+            `INSERT INTO subscription_group_rules (user_id, group_id, name, type, value, enabled, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(user.id, group_id, name, type, value, enabled === false ? 0 : 1, now, now).run();
+        return c.json({ success: true }, 201);
+    } catch (e) {
+        return c.json({ success: false, message: '创建失败' }, 500);
+    }
+});
+
+// PUT /api/subscription-groups/:id/rules/:ruleId - 更新分组规则
+subscriptionGroups.put('/:id/rules/:ruleId', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { ruleId } = c.req.param();
+    const body = await c.req.json<any>();
+    const now = new Date().toISOString();
+
+    const fields = ['name', 'type', 'value', 'enabled', 'sort_order'];
+    const updates = [];
+    const bindings = [];
+
+    for (const field of fields) {
+        if (body[field] !== undefined) {
+            updates.push(`${field} = ?`);
+            bindings.push(field === 'enabled' ? (body[field] ? 1 : 0) : body[field]);
+        }
+    }
+
+    if (updates.length === 0) {
+        return c.json({ success: false, message: '没有要更新的字段' }, 400);
+    }
+
+    updates.push('updated_at = ?');
+    bindings.push(now, ruleId, user.id);
+
+    const result = await c.env.DB.prepare(
+        `UPDATE subscription_group_rules SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`
+    ).bind(...bindings).run();
+
+    if (result.meta.changes === 0) {
+        return c.json({ success: false, message: '规则不存在或无权修改' }, 404);
+    }
+    return c.json({ success: true });
+});
+
+// DELETE /api/subscription-groups/:id/rules/:ruleId - 删除分组规则
+subscriptionGroups.delete('/:id/rules/:ruleId', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { ruleId } = c.req.param();
+    const result = await c.env.DB.prepare(
+        'DELETE FROM subscription_group_rules WHERE id = ? AND user_id = ?'
+    ).bind(ruleId, user.id).run();
+
+    if (result.meta.changes === 0) {
+        return c.json({ success: false, message: '规则不存在或无权删除' }, 404);
+    }
+    return c.json({ success: true });
+});
+
+
 // PATCH /api/subscription-groups/:id/toggle - 切换启用/禁用状态
 subscriptionGroups.patch('/:id/toggle', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');

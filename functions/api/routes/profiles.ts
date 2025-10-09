@@ -87,10 +87,26 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         for (const poll of successfulPolls) {
                             if (poll) {
                                 let nodes = parseSubscriptionContent(poll.content);
-                                const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.id, userId).all();
-                                if (rules && rules.length > 0) {
-                                    nodes = applySubscriptionRules(nodes, rules);
+                                let combinedRules = [];
+
+                                // Fetch and add group rules first
+                                if (poll.sub.group_id) {
+                                    const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.group_id, userId).all();
+                                    if (groupRules) {
+                                        combinedRules.push(...groupRules);
+                                    }
                                 }
+
+                                // Fetch and add subscription-specific rules
+                                const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.id, userId).all();
+                                if (subRules) {
+                                    combinedRules.push(...subRules);
+                                }
+
+                                if (combinedRules.length > 0) {
+                                    nodes = applySubscriptionRules(nodes, combinedRules);
+                                }
+                                
                                 allPolledNodes.push(...nodes.map(node => ({ ...node, subscriptionName: poll.sub.name })));
                             }
                         }
@@ -174,10 +190,26 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                     const result = await fetchSubscriptionContent(sub.url, timeout);
                     if (result.success && result.content) {
                         let nodes = parseSubscriptionContent(result.content);
-                        const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                        if (rules && rules.length > 0) {
-                            nodes = applySubscriptionRules(nodes, rules);
+                        let combinedRules = [];
+
+                        // Fetch and add group rules first
+                        if (sub.group_id) {
+                            const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.group_id, userId).all();
+                            if (groupRules) {
+                                combinedRules.push(...groupRules);
+                            }
                         }
+
+                        // Fetch and add subscription-specific rules
+                        const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
+                        if (subRules) {
+                            combinedRules.push(...subRules);
+                        }
+
+                        if (combinedRules.length > 0) {
+                            nodes = applySubscriptionRules(nodes, combinedRules);
+                        }
+                        
                         return nodes.map(node => ({ ...node, subscriptionName: sub.name }));
                     } else {
                         if ('error' in result) {
@@ -219,10 +251,28 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
         if (nodesSourceSub && subContent) {
             let nodes = parseSubscriptionContent(subContent);
-            const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(nodesSourceSub.id, userId).all();
-            if (rules && rules.length > 0) {
-                nodes = applySubscriptionRules(nodes, rules);
+            let combinedRules = [];
+
+            const fullSub = subscriptions.find(s => s.id === nodesSourceSub.id);
+
+            // Fetch and add group rules first
+            if (fullSub && fullSub.group_id) {
+                const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(fullSub.group_id, userId).all();
+                if (groupRules) {
+                    combinedRules.push(...groupRules);
+                }
             }
+
+            // Fetch and add subscription-specific rules
+            const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(nodesSourceSub.id, userId).all();
+            if (subRules) {
+                combinedRules.push(...subRules);
+            }
+
+            if (combinedRules.length > 0) {
+                nodes = applySubscriptionRules(nodes, combinedRules);
+            }
+            
             const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: nodesSourceSub.name }));
             allNodes.push(...nodesWithSubName);
         }

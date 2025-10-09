@@ -28,7 +28,7 @@ const nodeGroupStore = useNodeGroupStore();
 const nodes = ref<Partial<Node>[]>([]);
 const loading = ref(false);
 const importLoading = ref(false);
-const applyRules = ref(false);
+const applyRules = ref(true);
 const selectedGroupId = ref<string | undefined>(undefined);
 const error = ref<string | null>(null);
 

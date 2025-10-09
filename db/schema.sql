@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   FOREIGN KEY (group_id) REFERENCES subscription_groups (id) ON DELETE SET NULL
 );
 
+-- Create subscription_group_rules table
+CREATE TABLE IF NOT EXISTS subscription_group_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    value TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (group_id) REFERENCES subscription_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS subscription_groups (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -344,3 +360,4 @@ INSERT OR IGNORE INTO subconverter_assets (id, user_id, name, url, type, is_defa
 INSERT OR IGNORE INTO subconverter_assets (id, user_id, name, url, type, is_default) VALUES (531, 'system-user-001', 'Flowercloud', 'https://subweb.s3.fr-par.scw.cloud/RemoteConfig/customized/flower.ini', 'config', 0);
 INSERT OR IGNORE INTO subconverter_assets (id, user_id, name, url, type, is_default) VALUES (601, 'system-user-001', 'NeteaseUnblock', 'https://raw.githubusercontent.com/SleepyHeeead/subconverter-config/master/remote-config/special/netease.ini', 'config', 0);
 INSERT OR IGNORE INTO subconverter_assets (id, user_id, name, url, type, is_default) VALUES (602, 'system-user-001', 'Basic', 'https://raw.githubusercontent.com/SleepyHeeead/subconverter-config/master/remote-config/special/basic.ini', 'config', 0);
+
