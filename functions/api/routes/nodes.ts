@@ -231,6 +231,52 @@ nodes.post('/batch-update-group', manualAuthMiddleware, async (c) => {
     return c.json({ success: true, message: 'Nodes moved successfully' });
 });
 
+nodes.post('/batch-delete', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { ids } = await c.req.json<{ ids: string[] }>();
+
+    if (!ids || ids.length === 0) {
+        return c.json({ success: false, message: 'No nodes selected for deletion' }, 400);
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    const stmt = c.env.DB.prepare(`DELETE FROM nodes WHERE id IN (${placeholders}) AND user_id = ?`).bind(...ids, user.id);
+    
+    try {
+        await stmt.run();
+        return c.json({ success: true, message: 'Nodes deleted successfully.' });
+    } catch (error: any) {
+        console.error('Failed to batch delete nodes:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
+});
+
+nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { action, groupId } = await c.req.json<{ action: string; groupId: string }>();
+
+    if (action === 'clear') {
+        let stmt;
+        if (groupId === 'all') {
+            stmt = c.env.DB.prepare('DELETE FROM nodes WHERE user_id = ?').bind(user.id);
+        } else if (groupId === 'ungrouped') {
+            stmt = c.env.DB.prepare('DELETE FROM nodes WHERE user_id = ? AND group_id IS NULL').bind(user.id);
+        } else {
+            stmt = c.env.DB.prepare('DELETE FROM nodes WHERE user_id = ? AND group_id = ?').bind(user.id, groupId);
+        }
+
+        try {
+            await stmt.run();
+            return c.json({ success: true, message: 'Nodes cleared successfully.' });
+        } catch (error: any) {
+            console.error('Failed to clear nodes:', error);
+            return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+        }
+    }
+
+    return c.json({ success: false, message: 'Invalid action' }, 400);
+});
+
 nodes.get('/:id', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
