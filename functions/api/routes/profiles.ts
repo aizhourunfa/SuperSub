@@ -63,20 +63,34 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                 
                     const pollingPromises = Object.entries(groupedSubs).map(async ([groupId, subsInGroup]) => {
                         const startIndex = groupPollingState[groupId] || 0;
-                
+                    
+                        // 1. Create an array of subscriptions in polling order, with their original index
+                        const orderedSubsWithIndex: { sub: any; originalIndex: number }[] = [];
                         for (let i = 0; i < subsInGroup.length; i++) {
-                            const currentIndex = (startIndex + i) % subsInGroup.length;
-                            const currentSub = subsInGroup[currentIndex];
-                            const result = await fetchSubscriptionContent(currentSub.url, timeout);
-                
+                            const originalIndex = (startIndex + i) % subsInGroup.length;
+                            orderedSubsWithIndex.push({ sub: subsInGroup[originalIndex], originalIndex });
+                        }
+                    
+                        // 2. Fire off all fetch requests in parallel
+                        const promises = orderedSubsWithIndex.map(item => fetchSubscriptionContent(item.sub.url, timeout));
+                    
+                        // 3. Wait for all promises to settle
+                        const results = await Promise.all(promises);
+                    
+                        // 4. Find the first successful result in the original polling order
+                        for (let i = 0; i < results.length; i++) {
+                            const result = results[i];
                             if (result.success && result.content) {
+                                const successfulItem = orderedSubsWithIndex[i];
                                 if (!isDryRun) {
-                                    const nextIndex = (currentIndex + 1) % subsInGroup.length;
+                                    // Update polling index based on the successful subscription's original position
+                                    const nextIndex = (successfulItem.originalIndex + 1) % subsInGroup.length;
                                     groupPollingState[groupId] = nextIndex;
                                 }
-                                return { sub: currentSub, content: result.content };
+                                return { sub: successfulItem.sub, content: result.content };
                             }
                         }
+                    
                         return null; // No successful subscription in this group
                     });
                 
