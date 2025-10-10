@@ -31,7 +31,13 @@ export const selectSourcesByStrategy = async (profile: any, allSubscriptions: an
     
     const selectedSources: SelectedSource[] = [];
     const updatedPollingState: StrategyResult['updatedPollingState'] = {};
-    let strategy = airportOptions.strategy || 'use_all';
+    let strategy = airportOptions.strategy;
+    if (!strategy) {
+        if (airportOptions.use_all) strategy = 'all';
+        else if (airportOptions.polling) strategy = 'polling';
+        else if (airportOptions.random) strategy = 'random';
+        else strategy = 'all'; // Default fallback
+    }
 
     if (activeSubscriptions.length === 0) {
         return { selectedSources, updatedPollingState, strategy: 'none' };
