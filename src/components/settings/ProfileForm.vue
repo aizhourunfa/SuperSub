@@ -104,7 +104,9 @@ const fetchProfileData = async (id: string) => {
       formState.node_ids = profile.node_ids || [];
       formState.node_prefix_settings = { ...defaultFormState().node_prefix_settings, ...profile.node_prefix_settings };
       const opts = profile.airport_subscription_options || {};
-      if (opts.use_all) {
+      if (opts.strategy) {
+        formState.airport_subscription_options.strategy = opts.strategy;
+      } else if (opts.use_all) {
         formState.airport_subscription_options.strategy = 'all';
       } else if (opts.random) {
         formState.airport_subscription_options.strategy = 'random';
@@ -114,8 +116,6 @@ const fetchProfileData = async (id: string) => {
         formState.airport_subscription_options.strategy = 'all';
       }
       formState.airport_subscription_options.polling_mode = opts.polling_mode || 'hourly';
-      formState.airport_subscription_options.random = opts.random || false;
-      formState.airport_subscription_options.use_all = opts.use_all || false;
       formState.airport_subscription_options.timeout = opts.timeout || 10;
       formState.airport_subscription_options.polling_threshold = opts.polling_threshold || 5;
       formState.subconverter_backend_id = profile.subconverter_backend_id || null;
@@ -195,10 +195,8 @@ const handleSave = async () => {
         node_ids: formState.node_ids,
         node_prefix_settings: formState.node_prefix_settings,
         airport_subscription_options: {
-          polling: formState.airport_subscription_options.strategy === 'polling',
+          strategy: formState.airport_subscription_options.strategy,
           polling_mode: formState.airport_subscription_options.polling_mode,
-          random: formState.airport_subscription_options.strategy === 'random',
-          use_all: formState.airport_subscription_options.strategy === 'all',
           timeout: formState.airport_subscription_options.timeout,
           polling_threshold: formState.airport_subscription_options.polling_threshold,
         },
