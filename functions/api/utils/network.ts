@@ -1,4 +1,6 @@
 import { userAgents } from './constants';
+import { Logger } from './logger';
+
 export const fetchWithTimeout = (url: string, options: RequestInit, timeout: number): Promise<Response> => {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
@@ -21,7 +23,8 @@ export const fetchWithTimeout = (url: string, options: RequestInit, timeout: num
       });
   });
 };
-export const fetchSubscriptionContent = async (url: string, timeoutSeconds: number = 10): Promise<{ success: true, content: string } | { success: false, error: string }> => {
+
+export const fetchSubscriptionContent = async (url: string, logger: Logger, timeoutSeconds: number = 10): Promise<string | null> => {
     const controller = new AbortController();
     const timeoutMs = timeoutSeconds * 1000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -37,19 +40,23 @@ export const fetchSubscriptionContent = async (url: string, timeoutSeconds: numb
         if (response.ok) {
             const content = await response.text();
             if (content) {
-                return { success: true, content };
+                logger.success(`订阅内容获取成功。`, { url });
+                return content;
             } else {
-                return { success: false, error: 'Subscription content is empty.' };
+                logger.warn(`订阅内容为空。`, { url });
+                return null;
             }
         } else {
-            return { success: false, error: `Failed to fetch subscription: Status ${response.status}` };
+            logger.error(`获取订阅失败: HTTP状态 ${response.status}`, { url, status: response.status });
+            return null;
         }
     } catch (e: any) {
         clearTimeout(timeoutId);
         if (e.name === 'AbortError') {
-            return { success: false, error: `Subscription timed out after ${timeoutSeconds} seconds.` };
+            logger.error(`订阅请求超时 (${timeoutSeconds} 秒)。`, { url });
         } else {
-            return { success: false, error: `Failed to process subscription: ${e.message}` };
+            logger.error(`处理订阅时发生网络错误: ${e.message}`, { url, error: e.message });
         }
+        return null;
     }
 };

@@ -16,6 +16,7 @@ import subscriptionGroupRoutes from './routes/subscriptionGroups';
 import systemRoutes from './routes/system';
 import userRoutes from './routes/user';
 import publicRoutes from './routes/public';
+import profileRules from './routes/profileRules';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -39,6 +40,7 @@ api.route('/admin', adminRoutes);
 api.route('/assets', assetRoutes);
 api.route('/groups', groupRoutes);
 api.route('/subscription-groups', subscriptionGroupRoutes);
+api.route('/profile-rules', profileRules);
 api.route('/user', userRoutes);
 
 // Other remaining routes from the original file

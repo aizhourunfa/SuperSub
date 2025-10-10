@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, h, watch, computed } from 'vue';
-import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace, NSwitch, NTooltip, NSelect } from 'naive-ui';
+import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace, NSwitch, NTooltip, NSelect, NCard, NCode } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { Node, ApiResponse } from '@/types';
 import { useGroupStore as useNodeGroupStore } from '@/stores/groups';
@@ -17,6 +17,10 @@ const props = defineProps({
     type: String,
     required: true,
   },
+  profileId: {
+    type: String,
+    default: null,
+  },
   show: {
     type: Boolean,
     required: true,
@@ -25,12 +29,19 @@ const props = defineProps({
 
 const message = useMessage();
 const nodeGroupStore = useNodeGroupStore();
-const nodes = ref<Partial<Node>[]>([]);
+const previewData = ref<any>(null);
 const loading = ref(false);
 const importLoading = ref(false);
 const applyRules = ref(true);
 const selectedGroupId = ref<string | undefined>(undefined);
 const error = ref<string | null>(null);
+
+const nodes = computed(() => {
+  if (previewData.value?.mode === 'local') {
+    return previewData.value.nodes || [];
+  }
+  return [];
+});
 
 const columns: DataTableColumns<Partial<Node>> = [
     { title: '名称', key: 'name', ellipsis: { tooltip: true }, fixed: 'left', width: 200 },
@@ -62,13 +73,11 @@ const columns: DataTableColumns<Partial<Node>> = [
                 ghost: true,
                 type: 'primary',
                 onClick: () => {
-                   // The row object from preview is a ParsedNode.
                    const link = regenerateLink(row as ParsedNode);
                    if (link) {
                        navigator.clipboard.writeText(link);
                        message.success('已复制完整链接');
                    } else {
-                       // Fallback for safety, though regenerateLink should be reliable.
                        navigator.clipboard.writeText(row.raw || '');
                        message.success('已复制原始链接 (回退)');
                    }
@@ -80,23 +89,37 @@ const columns: DataTableColumns<Partial<Node>> = [
 
 const fetchPreview = async () => {
   if (!props.subscriptionUrl) {
-    nodes.value = [];
+    previewData.value = null;
     return;
   }
   loading.value = true;
-  nodes.value = [];
+  previewData.value = null;
   error.value = null;
+
   try {
-    const payload = {
-      url: props.subscriptionUrl,
-      subscription_id: props.subscriptionId,
-      apply_rules: applyRules.value,
-    };
-    const response = await api.post<ApiResponse<{ nodes: Partial<Node>[] }>>('/subscriptions/preview', payload, { timeout: 15000 });
-    if (response.data.success && response.data.data?.nodes) {
-      nodes.value = response.data.data.nodes;
+    // If there's a profileId, it means this subscription is part of a profile.
+    // We should use the profile's preview logic.
+    if (props.profileId) {
+      const response = await api.get<ApiResponse<any>>(`/profiles/${props.profileId}/preview-nodes`);
+      if (response.data.success) {
+        previewData.value = response.data.data;
+      } else {
+        throw new Error(response.data.message || '获取配置文件预览失败');
+      }
     } else {
-      throw new Error(response.data.message || '获取节点预览失败');
+      // Fallback to old logic if not part of a profile
+      const payload = {
+        url: props.subscriptionUrl,
+        subscription_id: props.subscriptionId,
+        apply_rules: applyRules.value,
+      };
+      const response = await api.post<ApiResponse<{ nodes: Partial<Node>[], analysis: any }>>('/subscriptions/preview', payload, { timeout: 15000 });
+      if (response.data.success && response.data.data?.nodes) {
+        // Adapt to the new data structure for consistency
+        previewData.value = { mode: 'local', nodes: response.data.data.nodes, analysis: response.data.data.analysis };
+      } else {
+        throw new Error(response.data.message || '获取节点预览失败');
+      }
     }
   } catch (err: any) {
     const errorMessage = err.message || '请求失败，请检查网络连接或订阅地址。';
@@ -108,8 +131,8 @@ const fetchPreview = async () => {
 };
 
 const handleImport = async () => {
-    if (!nodes.value || nodes.value.length === 0) {
-        message.warning('没有可导入的节点');
+    if (previewData.value?.mode !== 'local' || !nodes.value || nodes.value.length === 0) {
+        message.warning('没有可导入的本地节点');
         return;
     }
     importLoading.value = true;
@@ -154,7 +177,7 @@ onMounted(() => {
 
 <template>
   <div>
-    <n-space justify="space-between" class="mb-4" align="center">
+    <n-space v-if="!profileId" justify="space-between" class="mb-4" align="center">
       <n-space align="center">
         <n-switch v-model:value="applyRules" />
         <label>应用处理规则</label>
@@ -188,17 +211,31 @@ onMounted(() => {
         <p class="text-red-500">{{ error }}</p>
         <n-button size="small" @click="fetchPreview" class="mt-2">重试</n-button>
       </div>
-      <n-data-table
-        v-else
-        :columns="columns"
-        :data="nodes"
-        :pagination="{ pageSize: 10 }"
-        :bordered="false"
-        :max-height="400"
-        :scroll-x="660"
-      />
-      <n-empty v-if="!loading && !error && nodes.length === 0" description="订阅为空或无有效节点" class="py-8">
-      </n-empty>
+      <div v-else-if="previewData">
+        <!-- Remote Mode Preview -->
+        <div v-if="previewData.mode === 'remote'">
+          <n-card title="远程解析模式预览" :bordered="false" size="small">
+            <p>此订阅所属的配置文件为 <strong>远程解析</strong> 模式。预览将显示最终组合并发送给 Subconverter 的链接列表，而不是具体的节点。</p>
+            <n-code class="mt-4" language="text" :code="previewData.urls.join('\n')" />
+            <template #footer>
+              总计链接数量: {{ previewData.analysis.total }}
+            </template>
+          </n-card>
+        </div>
+        <!-- Local Mode Preview -->
+        <div v-else-if="previewData.mode === 'local'">
+          <n-data-table
+            :columns="columns"
+            :data="nodes"
+            :pagination="{ pageSize: 10 }"
+            :bordered="false"
+            :max-height="400"
+            :scroll-x="660"
+          />
+          <n-empty v-if="nodes.length === 0" description="订阅为空或无有效节点" class="py-8" />
+        </div>
+      </div>
+      <n-empty v-if="!loading && !error && !previewData" description="点击预览按钮获取节点信息" class="py-8" />
     </n-spin>
   </div>
 </template>

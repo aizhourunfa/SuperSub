@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted } from 'vue';
-import { useMessage, NButton, NSpace, NForm, NFormItem, NInput, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch, NInputNumber } from 'naive-ui';
+import { useMessage, NButton, NSpace, NForm, NFormItem, NInput, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch, NInputNumber, NRadioGroup, NRadioButton } from 'naive-ui';
 import { CopyOutline as CopyIcon } from '@vicons/ionicons5';
 import type { FormInst } from 'naive-ui';
 import type { Profile, Subscription } from '@/types';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
+import ProfileRulesManager from './ProfileRulesManager.vue';
 
 const props = defineProps<{
   profileId?: string | null;
@@ -37,10 +38,11 @@ const defaultFormState = () => ({
   node_ids: [] as string[],
   airport_subscription_options: {
     strategy: 'all' as 'all' | 'polling' | 'random',
-    polling_mode: 'hourly' as 'hourly' | 'request',
+    polling_mode: 'hourly' as 'hourly' | 'request' | 'group_request',
     use_all: true,
     random: false,
     timeout: 10 as number | null,
+    polling_threshold: 5 as number | null,
   },
   node_prefix_settings: {
     enable_subscription_prefix: false,
@@ -49,6 +51,8 @@ const defaultFormState = () => ({
   },
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
+  generation_mode: 'local' as 'local' | 'remote',
+  enable_logging: false,
 });
 
 const formState = reactive(defaultFormState());
@@ -93,13 +97,10 @@ const fetchProfileData = async (id: string) => {
     const response = await api.get<any>(`/profiles/${id}`);
     if (response.data.success) {
       const profile = response.data.data;
-      // The full profile data including content is in the response.
-      // We need to assign values from the profile and its content to the formState.
       formState.id = profile.id;
       formState.name = profile.name;
       formState.alias = profile.alias || '';
       
-      // Values from the parsed 'content' field
       formState.subscription_ids = profile.subscription_ids || [];
       formState.node_ids = profile.node_ids || [];
       formState.node_prefix_settings = { ...defaultFormState().node_prefix_settings, ...profile.node_prefix_settings };
@@ -111,15 +112,17 @@ const fetchProfileData = async (id: string) => {
       } else if (opts.polling) {
         formState.airport_subscription_options.strategy = 'polling';
       } else {
-        // Default to 'all' if no strategy is defined, to match new behavior
         formState.airport_subscription_options.strategy = 'all';
       }
       formState.airport_subscription_options.polling_mode = opts.polling_mode || 'hourly';
       formState.airport_subscription_options.random = opts.random || false;
       formState.airport_subscription_options.use_all = opts.use_all || false;
       formState.airport_subscription_options.timeout = opts.timeout || 10;
+      formState.airport_subscription_options.polling_threshold = opts.polling_threshold || 5;
       formState.subconverter_backend_id = profile.subconverter_backend_id || null;
       formState.subconverter_config_id = profile.subconverter_config_id || null;
+      formState.generation_mode = profile.generation_mode || 'local';
+      formState.enable_logging = profile.enable_logging || false;
     } else {
       message.error('获取配置详情失败');
     }
@@ -199,10 +202,12 @@ const handleSave = async () => {
           random: formState.airport_subscription_options.strategy === 'random',
           use_all: formState.airport_subscription_options.strategy === 'all',
           timeout: formState.airport_subscription_options.timeout,
+          polling_threshold: formState.airport_subscription_options.polling_threshold,
         },
         subconverter_backend_id: formState.subconverter_backend_id,
         subconverter_config_id: formState.subconverter_config_id,
-        generation_mode: 'online',
+        generation_mode: formState.generation_mode,
+        enable_logging: formState.enable_logging,
       };
       const payload = {
         name: formState.name,
@@ -230,21 +235,17 @@ const handleSave = async () => {
 
 onMounted(async () => {
   loadingData.value = true;
-  // Ensure all select options are loaded first
   await fetchAllSources();
 
   if (props.profileId) {
-    // Then fetch the specific profile data to populate the form
     await fetchProfileData(props.profileId);
   } else {
-    // For new profiles, set defaults after sources are loaded
     const defaultsResponse = await api.get('/user/defaults');
     if (defaultsResponse.data.success && defaultsResponse.data.data) {
       const userDefaults = defaultsResponse.data.data;
       formState.subconverter_backend_id = userDefaults.default_backend_id || null;
       formState.subconverter_config_id = userDefaults.default_config_id || null;
     } else {
-      // Fallback to global defaults if user-specific ones aren't available
       const defaultBackend = allBackends.value.find(b => b.is_default);
       const defaultConfig = allConfigs.value.find(c => c.is_default);
       formState.subconverter_backend_id = defaultBackend ? defaultBackend.id : null;
@@ -282,9 +283,23 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                   </template>
                 </n-input>
               </n-form-item>
+              <n-form-item label="启用诊断日志">
+                <n-switch v-model:value="formState.enable_logging" />
+                <template #feedback>开启后，生成或预览时将产生详细日志，便于排查问题。</template>
+              </n-form-item>
             </n-card>
 
             <n-card title="输出目标">
+              <n-form-item label="生成模式" path="generation_mode">
+                <n-radio-group v-model:value="formState.generation_mode" name="generation_mode_group">
+                  <n-radio-button value="local" label="本地解析" />
+                  <n-radio-button value="remote" label="远程解析" />
+                </n-radio-group>
+                <template #feedback>
+                  本地解析：功能强大，支持节点处理，但受限于本机网络。<br/>
+                  远程解析：利用转换后端网络，但无法进行节点处理。
+                </template>
+              </n-form-item>
               <n-form-item label="转换后端">
                 <n-select v-model:value="formState.subconverter_backend_id" :options="backendOptions" placeholder="留空则使用全局默认后端" clearable />
               </n-form-item>
@@ -350,6 +365,16 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                           style="width: 150px"
                         />
                       </n-form-item>
+                      
+                      <n-form-item v-if="formState.airport_subscription_options.strategy === 'polling' && formState.airport_subscription_options.polling_mode === 'group_request'" label="分组轮询阈值" label-placement="left" class="mb-0">
+                        <n-input-number
+                          v-model:value="formState.airport_subscription_options.polling_threshold"
+                          :min="1"
+                          placeholder="默认5"
+                          clearable
+                          style="width: 120px"
+                        />
+                      </n-form-item>
 
                       <n-form-item label="请求超时(秒)" label-placement="left" class="mb-0">
                         <n-input-number
@@ -411,6 +436,8 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                   />
                   <template #feedback>设置后，所有手工添加的节点名称将变为 "前缀 - 节点名称"。当“使用分组名作为前缀”开启时，此项无效。</template>
                 </n-form-item>
+                <n-divider />
+                <profile-rules-manager v-if="props.profileId" :profile-id="props.profileId" />
               </n-tab-pane>
             </n-tabs>
           </n-card>

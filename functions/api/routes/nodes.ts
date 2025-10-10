@@ -4,6 +4,92 @@ import type { Env } from '../utils/types';
 import { manualAuthMiddleware } from '../middleware/auth';
 import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
 
+// A simple Base64 encoder that works in both browser and Node.js environments
+const base64Encode = (str: string): string => {
+    try {
+        // For Node.js environments
+        if (typeof Buffer !== 'undefined') {
+            return Buffer.from(str, 'utf-8').toString('base64');
+        }
+        // For browser environments (fallback, though backend is Node.js)
+        if (typeof btoa !== 'undefined') {
+            return btoa(unescape(encodeURIComponent(str)));
+        }
+        return ''; // Fallback
+    } catch (e) {
+        console.error('Failed to encode to base64:', e);
+        return '';
+    }
+};
+
+export const regenerateLink = (node: ParsedNode): string => {
+    const protocol = node.protocol;
+    // Backend URL encoding is slightly different
+    const name = encodeURIComponent(node.name);
+
+    switch (protocol) {
+        case 'vmess':
+            // Ensure ps is set to the node name for regeneration
+            const vmessConfig = { ...(node.protocol_params || {}), ps: node.name };
+            // Remove remarks if it exists to avoid conflicts
+            delete vmessConfig.remarks;
+            return `vmess://${base64Encode(JSON.stringify(vmessConfig))}`;
+        
+        case 'ss':
+            if (!node.protocol_params?.method || !node.password) return node.link || '';
+            const credentials = `${node.protocol_params.method}:${node.password}`;
+            const encodedCredentials = base64Encode(credentials).replace(/=/g, '');
+            return `ss://${encodedCredentials}@${node.server}:${node.port}#${name}`;
+
+        case 'trojan':
+        case 'vless':
+            // Ensure password (for trojan) or uuid (for vless) is present
+            if (!node.password) return node.link || '';
+            // URL class is available in Cloudflare Workers
+            const url = new URL(`${protocol}://${node.password}@${node.server}:${node.port}`);
+            url.hash = name;
+            if (node.protocol_params) {
+                for (const key in node.protocol_params) {
+                    // password is part of userinfo, not search params
+                    if (key.toLowerCase() !== 'password' && key.toLowerCase() !== 'id') {
+                         url.searchParams.set(key, node.protocol_params[key]);
+                    }
+                }
+            }
+            return url.toString();
+
+        case 'hysteria2':
+            if (!node.password) return node.link || ''; // auth is stored in password field
+            const hy2Url = new URL(`hysteria2://${node.password}@${node.server}:${node.port}`);
+            hy2Url.hash = name;
+            if (node.protocol_params) {
+                for (const key in node.protocol_params) {
+                    if (key !== 'auth') { // Auth is already in the userinfo part
+                        hy2Url.searchParams.set(key, node.protocol_params[key]);
+                    }
+                }
+            }
+            return hy2Url.toString();
+        
+        case 'tuic':
+            if (!node.protocol_params?.uuid || !node.password) return node.link || '';
+            const tuicUrl = new URL(`tuic://${node.protocol_params.uuid}:${node.password}@${node.server}:${node.port}`);
+            tuicUrl.hash = name;
+            if (node.protocol_params) {
+                for (const key in node.protocol_params) {
+                    if (key !== 'uuid' && key !== 'password') {
+                        tuicUrl.searchParams.set(key, node.protocol_params[key]);
+                    }
+                }
+            }
+            return tuicUrl.toString();
+
+        default:
+            return node.link || ''; // Fallback to original link
+    }
+};
+
+
 const nodes = new Hono<{ Bindings: Env }>();
 
 nodes.get('/grouped', manualAuthMiddleware, async (c) => {
@@ -89,7 +175,8 @@ nodes.post('/batch-import', manualAuthMiddleware, async (c) => {
         const name = node.name || 'Unknown Node';
         const server = node.server || '';
         const port = node.port || 0;
-        const link = node.link || node.raw || '';
+        // Regenerate the link to ensure it's in a standard format before saving.
+        const link = regenerateLink(node);
 
         return c.env.DB.prepare(
             `INSERT INTO nodes (id, user_id, group_id, name, link, protocol, protocol_params, server, port, type, created_at, updated_at)
@@ -306,6 +393,8 @@ nodes.put('/:id', manualAuthMiddleware, async (c) => {
             return c.json({ success: false, message: 'Editing with multiple node links is not supported' }, 400);
         }
         const parsedNode = parsedNodes[0];
+        // Also regenerate the link on edit to ensure consistency
+        const regeneratedLink = regenerateLink(parsedNode);
         
         await c.env.DB.prepare(
             `UPDATE nodes
@@ -313,7 +402,7 @@ nodes.put('/:id', manualAuthMiddleware, async (c) => {
              WHERE id = ? AND user_id = ?`
         ).bind(
             body.name,
-            body.link,
+            regeneratedLink, // Use the regenerated link
             parsedNode.protocol,
             JSON.stringify(parsedNode.protocol_params),
             parsedNode.server,

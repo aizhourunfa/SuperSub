@@ -101,36 +101,41 @@ export const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: s
         if (!rule.enabled) continue;
 
         try {
-            const value = JSON.parse(rule.value);
+            if (rule.type === 'filter_by_name_keyword' || rule.type === 'exclude_by_name_keyword') {
+                // These rules expect a simple string of keywords, separated by commas or newlines.
+                const keywords = rule.value.split(/[\n,]+/).map((k: string) => k.trim().toLowerCase()).filter(Boolean);
+                if (keywords.length === 0) continue;
 
-            if (rule.type === 'filter_by_name_keyword' && value.keywords && value.keywords.length > 0) {
-                const lowerCaseKeywords = value.keywords.map((k: string) => k.toLowerCase());
-                processedNodes = processedNodes.filter(node => {
-                    const lowerCaseName = node.name.toLowerCase();
-                    return lowerCaseKeywords.some((keyword: string) => lowerCaseName.includes(keyword));
-                });
+                if (rule.type === 'filter_by_name_keyword') {
+                    processedNodes = processedNodes.filter(node => {
+                        const lowerCaseName = node.name.toLowerCase();
+                        return keywords.some((keyword: string) => lowerCaseName.includes(keyword));
+                    });
+                } else { // exclude_by_name_keyword
+                    processedNodes = processedNodes.filter(node => {
+                        const lowerCaseName = node.name.toLowerCase();
+                        return !keywords.some((keyword: string) => lowerCaseName.includes(keyword));
+                    });
+                }
             }
-            else if (rule.type === 'exclude_by_name_keyword' && value.keywords && value.keywords.length > 0) {
-                 const lowerCaseKeywords = value.keywords.map((k: string) => k.toLowerCase());
-                 processedNodes = processedNodes.filter(node => {
-                    const lowerCaseName = node.name.toLowerCase();
-                    return !lowerCaseKeywords.some((keyword: string) => lowerCaseName.includes(keyword));
-                });
-            }
-            else if (rule.type === 'filter_by_name_regex' && value.regex) {
-                // Check for ignoreCase flag, e.g., (?i)
-                const ignoreCase = value.regex.startsWith('(?i)');
-                const pattern = ignoreCase ? value.regex.substring(4) : value.regex;
-                const regex = new RegExp(pattern, ignoreCase ? 'i' : '');
-                processedNodes = processedNodes.filter(node => regex.test(node.name));
-            }
-            else if (rule.type === 'rename_by_regex' && value.regex && typeof value.format !== 'undefined') {
-                const ignoreCase = value.regex.startsWith('(?i)');
-                const pattern = ignoreCase ? value.regex.substring(4) : value.regex;
-                const regex = new RegExp(pattern, ignoreCase ? 'gi' : 'g'); // Use global flag for replace
-                processedNodes = processedNodes.map(node => {
-                    return { ...node, name: node.name.replace(regex, value.format) };
-                });
+            else if (rule.type === 'filter_by_name_regex' || rule.type === 'rename_by_regex') {
+                // These rules expect a JSON string.
+                const value = JSON.parse(rule.value);
+
+                if (rule.type === 'filter_by_name_regex' && value.regex) {
+                    const ignoreCase = value.regex.startsWith('(?i)');
+                    const pattern = ignoreCase ? value.regex.substring(4) : value.regex;
+                    const regex = new RegExp(pattern, ignoreCase ? 'i' : '');
+                    processedNodes = processedNodes.filter(node => regex.test(node.name));
+                }
+                else if (rule.type === 'rename_by_regex' && value.regex && typeof value.format !== 'undefined') {
+                    const ignoreCase = value.regex.startsWith('(?i)');
+                    const pattern = ignoreCase ? value.regex.substring(4) : value.regex;
+                    const regex = new RegExp(pattern, ignoreCase ? 'gi' : 'g'); // Use global flag for replace
+                    processedNodes = processedNodes.map(node => {
+                        return { ...node, name: node.name.replace(regex, value.format) };
+                    });
+                }
             }
         } catch (e) {
             console.error(`Error applying rule ${rule.id} (${rule.name}):`, e);
@@ -280,7 +285,13 @@ const parseSubscriptionDetails = (
 
 subscriptions.get('/', async (c) => {
     const user = c.get('jwtPayload');
-    const { results } = await c.env.DB.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC').bind(user.id).all();
+    const { results } = await c.env.DB.prepare(`
+      SELECT s.*, ps.profile_id
+      FROM subscriptions s
+      LEFT JOIN profile_subscriptions ps ON s.id = ps.subscription_id
+      WHERE s.user_id = ?
+      ORDER BY s.created_at DESC
+    `).bind(user.id).all();
     return c.json({ success: true, data: results });
 });
 
@@ -519,7 +530,6 @@ subscriptions.post('/preview', async (c) => {
             }
         }
         
-        // Re-analyze nodes after applying rules
         const analysis = {
             total: finalNodes.length,
             protocols: finalNodes.reduce((acc, node) => {
@@ -528,7 +538,6 @@ subscriptions.post('/preview', async (c) => {
                 return acc;
             }, {} as Record<string, number>),
             regions: finalNodes.reduce((acc, node) => {
-                // Basic region detection from name, can be improved
                 const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
                 const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
                 acc[region] = (acc[region] || 0) + 1;
@@ -536,7 +545,7 @@ subscriptions.post('/preview', async (c) => {
             }, {} as Record<string, number>),
         };
 
-        return c.json({ success: true, data: { nodes: finalNodes, analysis: analysis } });
+        return c.json({ success: true, data: { nodes: finalNodes, analysis } });
 
     } catch (error: any) {
         console.error(`Error fetching/parsing subscription from ${url}:`, error);

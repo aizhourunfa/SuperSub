@@ -1398,6 +1398,7 @@ onMounted(() => {
         v-if="currentSubscriptionForPreview"
         :subscription-id="currentSubscriptionForPreview.id"
         :subscription-url="currentSubscriptionForPreview.url"
+        :profile-id="currentSubscriptionForPreview.profile_id || undefined"
         :show="showNodePreviewModal"
       />
     </n-modal>
