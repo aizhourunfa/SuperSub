@@ -2,13 +2,13 @@
 import { ref, onMounted, computed, h } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
-import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NSpin, NIcon, NTag, NStatistic, NCard, NGrid, NGi } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NSpin, NIcon, NTag, NStatistic, NCard, NGrid, NGi, NScrollbar, NLog } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
 import { LogoutInProgressError } from '@/utils/errors';
-import type { ApiResponse, Profile, Subscription, Node } from '@/types';
+import type { ApiResponse, Profile, Subscription, Node, LogEntry } from '@/types';
 import { regenerateLink, type ParsedNode } from '@/utils/nodeParser';
 import { getNaiveTagColor } from '@/utils/colors';
 
@@ -32,7 +32,38 @@ const nodesPreviewData = ref<{
     protocols: Record<string, number>;
     regions: Record<string, number>;
   };
+  logs: LogEntry[];
+  mode: 'local' | 'remote';
 } | null>(null);
+
+const logs = computed(() => nodesPreviewData.value?.logs || []);
+const nodes = computed(() => nodesPreviewData.value?.nodes || []);
+
+const formattedLogs = computed(() => {
+  if (!logs.value || logs.value.length === 0) return '没有可显示的日志。';
+
+  const header = `==================================================\n上帝视角日志: ${new Date(logs.value[0].timestamp).toISOString()}\n==================================================`;
+  
+  const body = logs.value.map((log: LogEntry) => {
+    let logString = '';
+    if (log.level === 'STEP') {
+        logString = `\n================== 🚀 [${log.step}] ==================`;
+    } else {
+        const iconMap = { 'INFO': 'ℹ️', 'SUCCESS': '✅', 'WARN': '⚠️', 'ERROR': '❌', 'DEBUG': '🐞' };
+        const icon = iconMap[log.level] || '➡️';
+        logString = `${icon} [${log.level}] [${log.step}] ${log.message}`;
+    }
+    
+    if (log.data) {
+      logString += `\n   └─ DATA: ${JSON.stringify(log.data, null, 2)}`;
+    }
+    return logString;
+  }).join('\n');
+
+  const footer = '==================================================\n上帝视角日志结束\n==================================================';
+
+  return `${header}\n${body}\n${footer}`;
+});
 
 const previewNodeColumns: DataTableColumns<Partial<Node>> = [
   { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
@@ -215,30 +246,41 @@ onMounted(() => {
 
 
     <!-- Nodes Preview Modal -->
-    <n-modal v-model:show="showNodesPreviewModal" preset="card" :title="`节点预览 - ${currentProfileForPreview?.name}`" style="width: 800px;" :mask-closable="true" :trap-focus="false">
+    <n-modal v-model:show="showNodesPreviewModal" preset="card" :title="`节点预览 - ${currentProfileForPreview?.name}`" style="width: 1200px;" :mask-closable="true" :trap-focus="false">
       <n-spin :show="loadingNodesPreview">
-        <template v-if="nodesPreviewData">
-          <n-card title="订阅分析" :bordered="false" class="mt-4">
-            <n-grid :cols="3" :x-gap="12">
-              <n-gi><n-statistic label="节点总数" :value="nodesPreviewData.analysis.total" /></n-gi>
-              <n-gi>
-                <n-statistic label="协议分布">
-                  <n-space>
-                   <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" :color="getNaiveTagColor(protocol, 'protocol')" round>{{ protocol.toUpperCase() }}: {{ count }}</n-tag>
-                  </n-space>
-                </n-statistic>
-              </n-gi>
-              <n-gi>
-                <n-statistic label="地区分布">
-                   <n-space :size="'small'" style="flex-wrap: wrap;">
-                    <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" :color="getNaiveTagColor(region, 'region')" round>{{ region }}: {{ count }}</n-tag>
-                  </n-space>
-                </n-statistic>
-              </n-gi>
-            </n-grid>
-          </n-card>
-          <n-data-table :columns="previewNodeColumns" :data="nodesPreviewData.nodes" :pagination="{ pageSize: 10 }" :max-height="400" class="mt-4" />
-        </template>
+        <div v-if="nodesPreviewData">
+          <n-grid :cols="2" :x-gap="12">
+            <n-gi>
+              <n-card title="上帝日志" size="small" style="height: 100%;">
+                <n-scrollbar style="max-height: 600px;">
+                  <n-log :log="formattedLogs" language="text" trim />
+                </n-scrollbar>
+              </n-card>
+            </n-gi>
+            <n-gi>
+              <n-card title="订阅分析" :bordered="false">
+                <n-grid :cols="3" :x-gap="12">
+                  <n-gi><n-statistic label="节点总数" :value="nodesPreviewData.analysis.total" /></n-gi>
+                  <n-gi>
+                    <n-statistic label="协议分布">
+                      <n-space>
+                      <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" :color="getNaiveTagColor(protocol, 'protocol')" round>{{ protocol.toUpperCase() }}: {{ count }}</n-tag>
+                      </n-space>
+                    </n-statistic>
+                  </n-gi>
+                  <n-gi>
+                    <n-statistic label="地区分布">
+                      <n-space :size="'small'" style="flex-wrap: wrap;">
+                        <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" :color="getNaiveTagColor(region, 'region')" round>{{ region }}: {{ count }}</n-tag>
+                      </n-space>
+                    </n-statistic>
+                  </n-gi>
+                </n-grid>
+              </n-card>
+              <n-data-table :columns="previewNodeColumns" :data="nodes" :pagination="{ pageSize: 10 }" :max-height="400" class="mt-4" />
+            </n-gi>
+          </n-grid>
+        </div>
         <div v-else-if="!loadingNodesPreview" style="text-align: center; padding: 20px;">没有获取到节点数据。</div>
       </n-spin>
     </n-modal>

@@ -29,6 +29,7 @@ export interface Subscription {
   subscription_info?: string | null;
   remaining_traffic?: number | null;
   remaining_days?: number | null;
+  profile_id?: string | null;
 }
 
 export interface Node {
@@ -86,7 +87,7 @@ export interface Profile {
   };
 
   // Generation mode fields
-  generation_mode?: 'local' | 'online';
+  generation_mode?: 'local' | 'remote';
   template_id?: number | null;
   subconverter_backend_id?: number | null;
   subconverter_config_id?: number | null;
@@ -159,4 +160,15 @@ export interface SubconverterAsset {
   url: string;
   type: 'backend' | 'config';
   is_default?: 0 | 1;
+}
+
+
+export type LogLevel = 'STEP' | 'INFO' | 'SUCCESS' | 'WARN' | 'ERROR' | 'DEBUG';
+
+export interface LogEntry {
+    level: LogLevel;
+    message: string;
+    timestamp: string;
+    step?: string;
+    data?: any;
 }

@@ -4,324 +4,306 @@ import { manualAuthMiddleware } from '../middleware/auth';
 import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
 import { applySubscriptionRules, parseSubscriptionContent } from './subscriptions';
 import { fetchSubscriptionContent } from '../utils/network';
-import { userAgents } from '../utils/constants';
+import { generateSubscription } from '../utils/profileGenerator';
+import { Logger } from '../utils/logger';
 
 const profiles = new Hono<{ Bindings: Env }>();
 
+// --- START OF REFACTORED LOGIC ---
 
-export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any, isDryRun: boolean = false) => {
+interface SelectedSource {
+  type: 'subscription';
+  sub: { id: string; name: string; url: string; group_id: string | null; };
+}
+
+interface StrategyResult {
+  selectedSources: SelectedSource[];
+  updatedPollingState: {
+    polling_index?: number;
+    group_polling_indices?: Record<string, number>;
+  };
+  strategy: string;
+}
+
+export const selectSourcesByStrategy = async (profile: any, allSubscriptions: any[], logger: Logger, isDryRun: boolean = false): Promise<StrategyResult> => {
+    const content = JSON.parse(profile.content || '{}');
+    const airportOptions = content.airport_subscription_options || {};
+    let activeSubscriptions = allSubscriptions ? [...allSubscriptions] : [];
+    
+    const selectedSources: SelectedSource[] = [];
+    const updatedPollingState: StrategyResult['updatedPollingState'] = {};
+    let strategy = airportOptions.strategy || 'use_all';
+
+    if (activeSubscriptions.length === 0) {
+        return { selectedSources, updatedPollingState, strategy: 'none' };
+    }
+
+    // For remote mode, the logic remains the same: select URLs first.
+    // The new threshold logic only applies to local parsing.
+    if (content.generation_mode === 'remote') {
+        if (strategy === 'random') {
+            for (let i = activeSubscriptions.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [activeSubscriptions[i], activeSubscriptions[j]] = [activeSubscriptions[j], activeSubscriptions[i]];
+            }
+            selectedSources.push({ type: 'subscription', sub: activeSubscriptions[0] });
+        } else if (strategy === 'polling') {
+            const mode = airportOptions.polling_mode || 'hourly';
+            strategy = `polling (${mode})`;
+
+            if (mode === 'group_request') {
+                const groupedSubs: Record<string, any[]> = {};
+                for (const sub of activeSubscriptions) {
+                    const groupId = sub.group_id || 'ungrouped';
+                    if (!groupedSubs[groupId]) groupedSubs[groupId] = [];
+                    groupedSubs[groupId].push(sub);
+                }
+                const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+                for (const groupId in groupedSubs) {
+                    const subsInGroup = groupedSubs[groupId];
+                    const startIndex = groupPollingState[groupId] || 0;
+                    const selectedSubIndex = startIndex % subsInGroup.length;
+                    selectedSources.push({ type: 'subscription', sub: subsInGroup[selectedSubIndex] });
+                    if (!isDryRun) {
+                        groupPollingState[groupId] = (selectedSubIndex + 1) % subsInGroup.length;
+                    }
+                }
+                updatedPollingState.group_polling_indices = groupPollingState;
+            } else if (mode === 'request') {
+                const startIndex = profile.polling_index || 0;
+                selectedSources.push({ type: 'subscription', sub: activeSubscriptions[startIndex % activeSubscriptions.length] });
+                if (!isDryRun) {
+                    updatedPollingState.polling_index = (startIndex + 1) % activeSubscriptions.length;
+                }
+            } else { // hourly
+                const hour = new Date().getHours();
+                selectedSources.push({ type: 'subscription', sub: activeSubscriptions[hour % activeSubscriptions.length] });
+            }
+        } else { // use_all
+            for (const sub of activeSubscriptions) {
+                selectedSources.push({ type: 'subscription', sub });
+            }
+        }
+    } else {
+        // For local mode, we always pass all subscriptions downstream to let generateProfileNodes handle the fetching logic.
+        for (const sub of activeSubscriptions) {
+            selectedSources.push({ type: 'subscription', sub });
+        }
+    }
+
+    return { selectedSources, updatedPollingState, strategy };
+};
+
+
+export const applyAllRules = async (db: D1Database, userId: string, profileId: string, nodes: (ParsedNode & { id: string; raw: string; })[], logger: Logger): Promise<(ParsedNode & { id: string; raw: string; })[]> => {
+    logger.step('应用规则');
+    let processedNodes = [...nodes];
+    const beforeRulesCount = processedNodes.length;
+
+    const { results: profileRules } = await db.prepare(
+        'SELECT * FROM profile_rules WHERE profile_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC'
+    ).bind(profileId, userId).all<any>();
+
+    if (profileRules && profileRules.length > 0) {
+        logger.info(`发现 ${profileRules.length} 条配置全局规则。`);
+        processedNodes = applySubscriptionRules(processedNodes, profileRules);
+        logger.info(`全局规则应用完毕。节点数变化: ${beforeRulesCount} -> ${processedNodes.length}`);
+    } else {
+        logger.info("没有发现可用的配置全局规则。");
+    }
+
+    return processedNodes;
+};
+
+
+export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any, logger: Logger, isDryRun: boolean = false): Promise<(ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[]> => {
+    logger.step('节点生成');
     const content = JSON.parse(profile.content || '{}');
     const userId = profile.user_id;
+    const airportOptions = content.airport_subscription_options || {};
+    const timeout = airportOptions.timeout || 10;
 
     let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
-
+    
+    logger.step('处理订阅');
     if (content.subscription_ids && content.subscription_ids.length > 0) {
-        const batchSize = 50; // Set a batch size to avoid hitting SQL variable limits
-        let subscriptions: { id: string; name: string; url: string; group_id: string | null }[] = [];
+        const subs = await env.DB.prepare(`SELECT * FROM subscriptions WHERE id IN (${content.subscription_ids.map(()=>'?').join(',')}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<any>();
+        
+        const { selectedSources, updatedPollingState, strategy } = await selectSourcesByStrategy(profile, subs.results, logger, isDryRun);
+        logger.info(`订阅处理策略: '${strategy}'。`);
 
-        for (let i = 0; i < content.subscription_ids.length; i += batchSize) {
-            const batch = content.subscription_ids.slice(i, i + batchSize);
-            const subPlaceholders = batch.map(() => '?').join(',');
-            const { results: batchResults } = await env.DB.prepare(`
-                SELECT s.id, s.name, s.url, s.group_id
-                FROM subscriptions s
-                WHERE s.id IN (${subPlaceholders}) AND s.user_id = ?
-            `).bind(...batch, userId).all<{ id: string; name: string; url: string; group_id: string | null }>();
-            subscriptions = subscriptions.concat(batchResults);
-        }
+        if (strategy === 'polling (group_request)' && content.generation_mode === 'local') {
+            const pollingThreshold = airportOptions.polling_threshold || 5;
+            logger.info(`分组轮询模式 (本地解析)，轮询阈值: ${pollingThreshold}`);
+            
+            const groupedSubs: Record<string, any[]> = {};
+            for (const source of selectedSources) {
+                const groupId = source.sub.group_id || 'ungrouped';
+                if (!groupedSubs[groupId]) groupedSubs[groupId] = [];
+                groupedSubs[groupId].push(source.sub);
+            }
 
-        const airportOptions = content.airport_subscription_options || {};
-        const timeout = airportOptions.timeout || 10; // Default to 10 seconds
+            const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
 
-        let activeSubscriptions = subscriptions ? [...subscriptions] : [];
-        let nodesSourceSub: { id: string; name: string; url: string; } | null = null;
-        let subContent: string | null = null;
+            for (const groupId in groupedSubs) {
+                const subsInGroup = groupedSubs[groupId];
+                const startIndex = groupPollingState[groupId] || 0;
+                let foundOne = false;
 
-        if (activeSubscriptions.length > 0) {
-            if (airportOptions.random) {
-                // Fisher-Yates shuffle algorithm
-                for (let i = activeSubscriptions.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [activeSubscriptions[i], activeSubscriptions[j]] = [activeSubscriptions[j], activeSubscriptions[i]];
-                }
-                
-                // Now, perform a serial fetch on the shuffled list
-                for (const sub of activeSubscriptions) {
-                    const result = await fetchSubscriptionContent(sub.url, timeout);
-                    if (result.success && result.content) {
-                        nodesSourceSub = sub;
-                        subContent = result.content;
-                        break; // Found a working one, stop searching
-                    }
-                }
+                logger.info(`正在处理分组 '${groupId}'，共 ${subsInGroup.length} 个订阅，起始索引: ${startIndex}`);
 
-            } else if (airportOptions.polling) {
-                const mode = airportOptions.polling_mode || 'hourly';
-
-                if (mode === 'group_request') {
-                    const groupedSubs: Record<string, any[]> = {};
-                    for (const sub of activeSubscriptions) {
-                        const groupId = sub.group_id || 'ungrouped';
-                        if (!groupedSubs[groupId]) {
-                            groupedSubs[groupId] = [];
-                        }
-                        groupedSubs[groupId].push(sub);
-                    }
-
-                    const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
-
-                    // Groups are fetched in parallel, but subscriptions within a group are fetched serially.
-                    const pollingPromises = Object.entries(groupedSubs).map(async ([groupId, subsInGroup]) => {
-                        const startIndex = groupPollingState[groupId] || 0;
-
-                        // Create an array of subscriptions in polling order
-                        const orderedSubs: { sub: any; originalIndex: number }[] = [];
-                        for (let i = 0; i < subsInGroup.length; i++) {
-                            const originalIndex = (startIndex + i) % subsInGroup.length;
-                            orderedSubs.push({ sub: subsInGroup[originalIndex], originalIndex });
-                        }
-
-                        // Serially fetch within the group
-                        for (const item of orderedSubs) {
-                            const result = await fetchSubscriptionContent(item.sub.url, timeout);
-                            if (result.success && result.content) {
-                                if (!isDryRun) {
-                                    const nextIndex = (item.originalIndex + 1) % subsInGroup.length;
-                                    groupPollingState[groupId] = nextIndex;
-                                }
-                                return { sub: item.sub, content: result.content }; // Success, return result for this group
-                            }
-                        }
-                        
-                        if (!isDryRun) {
-                            groupPollingState[groupId] = 0;
-                        }
-                        return null; // No successful subscription in this group
-                    });
-
-                    const successfulPolls = (await Promise.all(pollingPromises)).filter(p => p !== null);
-
-                    if (successfulPolls.length > 0) {
-                        const allPolledNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; })[] = [];
-                        for (const poll of successfulPolls) {
-                            if (poll) {
-                                let nodes = parseSubscriptionContent(poll.content);
-                                let combinedRules = [];
-
-                                if (poll.sub.group_id) {
-                                    const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.group_id, userId).all();
-                                    if (groupRules) combinedRules.push(...groupRules);
-                                }
-
-                                const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.id, userId).all();
-                                if (subRules) combinedRules.push(...subRules);
-
-                                if (combinedRules.length > 0) {
-                                    nodes = applySubscriptionRules(nodes, combinedRules);
-                                }
-                                
-                                const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: poll.sub.name }));
-                                allPolledNodes.push(...nodesWithSubName);
-                            }
-                        }
-                        allNodes.push(...allPolledNodes);
-
-                        if (!isDryRun) {
-                             executionCtx.waitUntil(
-                                env.DB.prepare(`UPDATE profiles SET group_polling_indices = ? WHERE id = ?`).bind(JSON.stringify(groupPollingState), profile.id).run()
-                            );
-                        }
-                    }
-                     subContent = null;
-                     nodesSourceSub = null;
-                
-                } else if (mode === 'request') {
-                    const startIndex = profile.polling_index || 0;
+                for (let i = 0; i < Math.min(subsInGroup.length, pollingThreshold); i++) {
+                    const currentIndex = (startIndex + i) % subsInGroup.length;
+                    const currentSub = subsInGroup[currentIndex];
+                    logger.info(`[${groupId}] 尝试第 ${i + 1} 个订阅: '${currentSub.name}'`);
                     
-                    for (let i = 0; i < activeSubscriptions.length; i++) {
-                        const currentIndex = (startIndex + i) % activeSubscriptions.length;
-                        const currentSub = activeSubscriptions[currentIndex];
+                    const fetchedContent = await fetchSubscriptionContent(currentSub.url, logger, timeout);
+                    if (fetchedContent) {
+                        let nodes = parseSubscriptionContent(fetchedContent);
+                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: currentSub.name }));
+                        allNodes.push(...nodesWithSubName);
+                        logger.success(`[${groupId}] 成功从 '${currentSub.name}' 获取 ${nodes.length} 个节点。该分组处理完毕。`);
                         
-                        const result = await fetchSubscriptionContent(currentSub.url, timeout);
-                        if (result.success && result.content) {
-                            nodesSourceSub = currentSub;
-                            subContent = result.content;
-
-                            if (!isDryRun) {
-                                const nextIndex = (currentIndex + 1) % activeSubscriptions.length;
-                                executionCtx.waitUntil(
-                                    env.DB.prepare(
-                                        `UPDATE profiles SET polling_index = ?, last_successful_subscription_id = ?, last_successful_subscription_content = ?, last_successful_subscription_updated_at = ? WHERE id = ?`
-                                    ).bind(nextIndex, currentSub.id, result.content, new Date().toISOString(), profile.id).run()
-                                );
-                            }
-                            break; // Found a working one, stop searching
-                        } else {
-                            if ('error' in result) {
-                                console.error(`Polling subscription ${currentSub.id} failed: ${result.error}`);
-                            }
+                        if (!isDryRun) {
+                            groupPollingState[groupId] = (currentIndex + 1) % subsInGroup.length;
                         }
-                    }
-
-                    if (!subContent) {
-                        console.warn(`All polling subscriptions failed for profile ${profile.id}. Using fallback.`);
-                        if (profile.last_successful_subscription_content) {
-                            let fallbackNodes = parseSubscriptionContent(profile.last_successful_subscription_content);
-                            const fallbackSubId = profile.last_successful_subscription_id;
-                            
-                            if (fallbackSubId) {
-                                const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(fallbackSubId, userId).all();
-                                if (rules && rules.length > 0) {
-                                    fallbackNodes = applySubscriptionRules(fallbackNodes, rules);
-                                }
-                            }
-                            
-                            const nodesWithSubName = fallbackNodes.map(node => ({ ...node, subscriptionName: 'Last Successful (Fallback)' }));
-                            allNodes.push(...nodesWithSubName);
-                        }
-                        subContent = null;
-                        nodesSourceSub = null;
-                    }
-                } else if (mode === 'hourly') {
-                    const hour = new Date().getHours();
-                    const hourlyIndex = hour % activeSubscriptions.length;
-                    const hourlySub = activeSubscriptions[hourlyIndex];
-                    const result = await fetchSubscriptionContent(hourlySub.url, timeout);
-                    if (result.success) {
-                        nodesSourceSub = hourlySub;
-                        subContent = result.content;
+                        foundOne = true;
+                        break;
                     }
                 }
-            } else if (airportOptions.use_all) {
-                const promises = activeSubscriptions.map(async (sub) => {
-                    const result = await fetchSubscriptionContent(sub.url, timeout);
-                    if (result.success && result.content) {
-                        let nodes = parseSubscriptionContent(result.content);
-                        let combinedRules = [];
-
-                        if (sub.group_id) {
-                            const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.group_id, userId).all();
-                            if (groupRules) combinedRules.push(...groupRules);
-                        }
-
-                        const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                        if (subRules) combinedRules.push(...subRules);
-
-                        if (combinedRules.length > 0) {
-                            nodes = applySubscriptionRules(nodes, combinedRules);
-                        }
-                        
-                        return nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                    } else {
-                        if ('error' in result) {
-                            console.error(`Failed to fetch subscription ${sub.id} in 'use_all' mode: ${result.error}`);
-                        }
-                        return [];
-                    }
-                });
-            
-                const nodeArrays = await Promise.all(promises);
-                for (const nodeArray of nodeArrays) {
-                    allNodes.push(...nodeArray);
+                if (!foundOne) {
+                    logger.warn(`[${groupId}] 在 ${pollingThreshold} 次尝试后，未能从该分组获取任何可用节点。`);
                 }
-                subContent = null;
-                nodesSourceSub = null;
-            } else {
-                // Smart Fetch: Default behavior, serial fetch
-                for (const sub of activeSubscriptions) {
-                    const result = await fetchSubscriptionContent(sub.url, timeout);
-                    if (result.success && result.content) {
-                        nodesSourceSub = sub;
-                        subContent = result.content;
-                        break; // Found a working one, stop searching
-                    } else {
-                        if ('error' in result) {
-                            console.error(`Failed to fetch subscription ${sub.id}: ${result.error}`);
-                        }
+            }
+            if (Object.keys(groupPollingState).length > 0) {
+                updatedPollingState.group_polling_indices = groupPollingState;
+            }
+
+        } else {
+            const fetchPromises = selectedSources.map(async (source) => {
+                if (source.type === 'subscription') {
+                    logger.info(`正在获取: ${source.sub.name}`, { url: source.sub.url });
+                    const content = await fetchSubscriptionContent(source.sub.url, logger, timeout);
+                    if (content) {
+                        return { ...source, content };
                     }
                 }
-                if (!subContent) {
-                    console.warn(`All subscriptions failed for profile ${profile.id}.`);
+                return null;
+            });
+
+            const fetchedSources = (await Promise.all(fetchPromises)).filter(Boolean);
+            logger.success(`成功从 ${fetchedSources.length} 个订阅中获取到内容。`);
+
+            for (const source of fetchedSources) {
+                if (source && source.content) {
+                    let nodes = parseSubscriptionContent(source.content);
+                    const initialNodeCount = nodes.length;
+                    logger.info(`从 '${source.sub.name}' 中解析出 ${initialNodeCount} 个节点。`);
+                    let combinedRules = [];
+
+                    if (source.sub.group_id) {
+                        const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(source.sub.group_id, userId).all();
+                        if (groupRules && groupRules.length > 0) {
+                            logger.debug(`发现 ${groupRules.length} 条来自订阅组 '${source.sub.group_id}' 的规则。`);
+                            combinedRules.push(...groupRules);
+                        }
+                    }
+
+                    const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(source.sub.id, userId).all();
+                    if (subRules && subRules.length > 0) {
+                        logger.debug(`发现 ${subRules.length} 条来自订阅 '${source.sub.name}' 的规则。`);
+                        combinedRules.push(...subRules);
+                    }
+
+                    if (combinedRules.length > 0) {
+                        const countBefore = nodes.length;
+                        nodes = applySubscriptionRules(nodes, combinedRules);
+                        logger.info(`已对 '${source.sub.name}' 应用 ${combinedRules.length} 条订阅/组规则。节点数变化: ${countBefore} -> ${nodes.length}`);
+                    }
+                    
+                    const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: source.sub.name }));
+                    allNodes.push(...nodesWithSubName);
                 }
             }
         }
+        
+        logger.info(`处理完所有订阅后，当前总节点数: ${allNodes.length}`);
 
-        if (nodesSourceSub && subContent) {
-            let nodes = parseSubscriptionContent(subContent);
-            let combinedRules = [];
-
-            const fullSub = subscriptions.find(s => s.id === nodesSourceSub.id);
-
-            if (fullSub && fullSub.group_id) {
-                const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(fullSub.group_id, userId).all();
-                if (groupRules) combinedRules.push(...groupRules);
+        if (!isDryRun && Object.keys(updatedPollingState).length > 0) {
+            let setClauses = [];
+            let bindings: (string | number | undefined)[] = [];
+            if (updatedPollingState.polling_index !== undefined) {
+                setClauses.push('polling_index = ?');
+                bindings.push(updatedPollingState.polling_index);
             }
-
-            const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(nodesSourceSub.id, userId).all();
-            if (subRules) combinedRules.push(...subRules);
-
-            if (combinedRules.length > 0) {
-                nodes = applySubscriptionRules(nodes, combinedRules);
+            if (updatedPollingState.group_polling_indices !== undefined) {
+                setClauses.push('group_polling_indices = ?');
+                bindings.push(JSON.stringify(updatedPollingState.group_polling_indices));
             }
             
-            const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: nodesSourceSub.name }));
-            allNodes.push(...nodesWithSubName);
+            if (setClauses.length > 0) {
+                const query = `UPDATE profiles SET ${setClauses.join(', ')} WHERE id = ?`;
+                bindings.push(profile.id);
+                executionCtx.waitUntil(env.DB.prepare(query).bind(...bindings).run());
+            }
         }
     }
 
+    logger.step('处理手动节点');
     if (content.node_ids && content.node_ids.length > 0) {
-        const batchSize = 50;
-        let manualNodes: any[] = [];
-        
-        for (let i = 0; i < content.node_ids.length; i += batchSize) {
-            const batch = content.node_ids.slice(i, i + batchSize);
-            const nodePlaceholders = batch.map(() => '?').join(',');
-            const manualNodesQuery = `
-                SELECT n.*, g.name as group_name
-                FROM nodes n
-                LEFT JOIN node_groups g ON n.group_id = g.id
-                WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
-            `;
-            const { results: batchResults } = await env.DB.prepare(manualNodesQuery).bind(...batch, userId).all<any>();
-            manualNodes = manualNodes.concat(batchResults);
-        }
+        const { results: manualNodes } = await env.DB.prepare(`
+            SELECT n.*, g.name as group_name FROM nodes n
+            LEFT JOIN node_groups g ON n.group_id = g.id
+            WHERE n.id IN (${content.node_ids.map(()=>'?').join(',')}) AND n.user_id = ?
+        `).bind(...content.node_ids, userId).all<any>();
 
         const parsedManualNodes = manualNodes.map((n: any) => ({
+            ...parseNodeLinks(n.link)[0],
             id: n.id,
-            name: n.name,
-            protocol: n.protocol,
-            server: n.server,
-            port: n.port,
-            protocol_params: JSON.parse(n.protocol_params || '{}'),
-            link: n.link,
             raw: n.link,
             group_name: n.group_name,
+            isManual: true,
         }));
-
-        const taggedManualNodes = parsedManualNodes.map((node: any) => ({ ...node, isManual: true }));
-        allNodes.push(...taggedManualNodes);
+        allNodes.push(...parsedManualNodes);
+        logger.info(`已添加 ${parsedManualNodes.length} 个手动节点。当前总节点数: ${allNodes.length}`);
+    } else {
+        logger.info("没有需要添加的手动节点。");
     }
 
+    allNodes = await applyAllRules(env.DB, userId, profile.id, allNodes, logger);
+
+    logger.step('添加节点前缀');
     const prefixSettings = content.node_prefix_settings || {};
     if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
+        let prefixAppliedCount = 0;
         allNodes = allNodes.map(node => {
             if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
+                prefixAppliedCount++;
                 return { ...node, name: `${node.subscriptionName} - ${node.name}` };
             }
             if (node.isManual) {
                 if (prefixSettings.enable_group_name_prefix && node.group_name) {
+                    prefixAppliedCount++;
                     return { ...node, name: `${node.group_name} - ${node.name}` };
                 }
                 if (prefixSettings.manual_node_prefix) {
+                    prefixAppliedCount++;
                     return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
                 }
             }
             return node;
         });
+        logger.info(`已为 ${prefixAppliedCount} 个节点添加前缀。`);
+    } else {
+        logger.info("未启用任何前缀设置。");
     }
     
+    logger.success(`节点生成流程结束。最终节点数: ${allNodes.length}`);
     return allNodes;
 };
+
+// --- END OF REFACTORED LOGIC ---
+
 
 // This is a public endpoint, no auth on this specific route
 profiles.get('/:identifier/subscribe', async (c) => {
@@ -341,31 +323,9 @@ profiles.get('/:id/preview-nodes', async (c) => {
     if (!profile) {
         return c.json({ success: false, message: 'Profile not found' }, 404);
     }
-
-    try {
-        const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, false); // isDryRun = false to enable polling on preview
-        
-        const analysis = {
-            total: allNodes.length,
-            protocols: allNodes.reduce((acc, node) => {
-                const protocol = node.protocol || 'unknown';
-                acc[protocol] = (acc[protocol] || 0) + 1;
-                return acc;
-            }, {} as Record<string, number>),
-            regions: allNodes.reduce((acc, node) => {
-                const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
-                const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
-                acc[region] = (acc[region] || 0) + 1;
-                return acc;
-            }, {} as Record<string, number>),
-        };
-
-        return c.json({ success: true, data: { nodes: allNodes, analysis: analysis } });
-
-    } catch (e: any) {
-        console.error(`Error generating profile preview for ${id}:`, e);
-        return c.json({ success: false, message: `Internal server error: ${e.message}` }, 500);
-    }
+    
+    // The preview route now calls the centralized generator with isDryRun = true
+    return generateSubscription(c, profile, true);
 });
 
 profiles.get('/', async (c) => {
@@ -406,7 +366,8 @@ profiles.post('/', async (c) => {
         airport_subscription_options: content.airport_subscription_options,
         subconverter_backend_id: content.subconverter_backend_id,
         subconverter_config_id: content.subconverter_config_id,
-        generation_mode: 'online',
+        generation_mode: content.generation_mode || 'local',
+        enable_logging: content.enable_logging,
     };
 
     await c.env.DB.prepare(
@@ -454,7 +415,8 @@ profiles.put('/:id', async (c) => {
         airport_subscription_options: content.airport_subscription_options,
         subconverter_backend_id: content.subconverter_backend_id,
         subconverter_config_id: content.subconverter_config_id,
-        generation_mode: 'online',
+        generation_mode: content.generation_mode || 'local',
+        enable_logging: content.enable_logging,
     };
 
     await c.env.DB.prepare(
