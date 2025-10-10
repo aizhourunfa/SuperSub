@@ -52,7 +52,6 @@ const defaultFormState = () => ({
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
   generation_mode: 'local' as 'local' | 'remote',
-  enable_logging: false,
 });
 
 const formState = reactive(defaultFormState());
@@ -122,7 +121,6 @@ const fetchProfileData = async (id: string) => {
       formState.subconverter_backend_id = profile.subconverter_backend_id || null;
       formState.subconverter_config_id = profile.subconverter_config_id || null;
       formState.generation_mode = profile.generation_mode || 'local';
-      formState.enable_logging = profile.enable_logging || false;
     } else {
       message.error('获取配置详情失败');
     }
@@ -207,7 +205,6 @@ const handleSave = async () => {
         subconverter_backend_id: formState.subconverter_backend_id,
         subconverter_config_id: formState.subconverter_config_id,
         generation_mode: formState.generation_mode,
-        enable_logging: formState.enable_logging,
       };
       const payload = {
         name: formState.name,
@@ -282,10 +279,6 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                     </n-button>
                   </template>
                 </n-input>
-              </n-form-item>
-              <n-form-item label="启用诊断日志">
-                <n-switch v-model:value="formState.enable_logging" />
-                <template #feedback>开启后，生成或预览时将产生详细日志，便于排查问题。</template>
               </n-form-item>
             </n-card>
 

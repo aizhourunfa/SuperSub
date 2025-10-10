@@ -32,38 +32,10 @@ const nodesPreviewData = ref<{
     protocols: Record<string, number>;
     regions: Record<string, number>;
   };
-  logs: LogEntry[];
   mode: 'local' | 'remote';
 } | null>(null);
 
-const logs = computed(() => nodesPreviewData.value?.logs || []);
 const nodes = computed(() => nodesPreviewData.value?.nodes || []);
-
-const formattedLogs = computed(() => {
-  if (!logs.value || logs.value.length === 0) return '没有可显示的日志。';
-
-  const header = `==================================================\n上帝视角日志: ${new Date(logs.value[0].timestamp).toISOString()}\n==================================================`;
-  
-  const body = logs.value.map((log: LogEntry) => {
-    let logString = '';
-    if (log.level === 'STEP') {
-        logString = `\n================== 🚀 [${log.step}] ==================`;
-    } else {
-        const iconMap = { 'INFO': 'ℹ️', 'SUCCESS': '✅', 'WARN': '⚠️', 'ERROR': '❌', 'DEBUG': '🐞' };
-        const icon = iconMap[log.level] || '➡️';
-        logString = `${icon} [${log.level}] [${log.step}] ${log.message}`;
-    }
-    
-    if (log.data) {
-      logString += `\n   └─ DATA: ${JSON.stringify(log.data, null, 2)}`;
-    }
-    return logString;
-  }).join('\n');
-
-  const footer = '==================================================\n上帝视角日志结束\n==================================================';
-
-  return `${header}\n${body}\n${footer}`;
-});
 
 const previewNodeColumns: DataTableColumns<Partial<Node>> = [
   { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
@@ -249,14 +221,7 @@ onMounted(() => {
     <n-modal v-model:show="showNodesPreviewModal" preset="card" :title="`节点预览 - ${currentProfileForPreview?.name}`" style="width: 1200px;" :mask-closable="true" :trap-focus="false">
       <n-spin :show="loadingNodesPreview">
         <div v-if="nodesPreviewData">
-          <n-grid :cols="2" :x-gap="12">
-            <n-gi>
-              <n-card title="上帝日志" size="small" style="height: 100%;">
-                <n-scrollbar style="max-height: 600px;">
-                  <n-log :log="formattedLogs" language="text" trim />
-                </n-scrollbar>
-              </n-card>
-            </n-gi>
+          <n-grid :cols="1">
             <n-gi>
               <n-card title="订阅分析" :bordered="false">
                 <n-grid :cols="3" :x-gap="12">
