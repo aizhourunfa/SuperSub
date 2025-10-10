@@ -43,54 +43,53 @@ export const selectSourcesByStrategy = async (profile: any, allSubscriptions: an
         return { selectedSources, updatedPollingState, strategy: 'none' };
     }
 
-    // For remote mode, the logic remains the same: select URLs first.
-    // The new threshold logic only applies to local parsing.
-    if (content.generation_mode === 'remote') {
-        if (strategy === 'random') {
-            for (let i = activeSubscriptions.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [activeSubscriptions[i], activeSubscriptions[j]] = [activeSubscriptions[j], activeSubscriptions[i]];
+    if (strategy === 'random') {
+        const groupedSubs: Record<string, any[]> = {};
+        for (const sub of activeSubscriptions) {
+            const groupId = sub.group_id || 'ungrouped';
+            if (!groupedSubs[groupId]) {
+                groupedSubs[groupId] = [];
             }
-            selectedSources.push({ type: 'subscription', sub: activeSubscriptions[0] });
-        } else if (strategy === 'polling') {
-            const mode = airportOptions.polling_mode || 'hourly';
-            strategy = `polling (${mode})`;
-
-            if (mode === 'group_request') {
-                const groupedSubs: Record<string, any[]> = {};
-                for (const sub of activeSubscriptions) {
-                    const groupId = sub.group_id || 'ungrouped';
-                    if (!groupedSubs[groupId]) groupedSubs[groupId] = [];
-                    groupedSubs[groupId].push(sub);
-                }
-                const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
-                for (const groupId in groupedSubs) {
-                    const subsInGroup = groupedSubs[groupId];
-                    const startIndex = groupPollingState[groupId] || 0;
-                    const selectedSubIndex = startIndex % subsInGroup.length;
-                    selectedSources.push({ type: 'subscription', sub: subsInGroup[selectedSubIndex] });
-                    if (!isDryRun) {
-                        groupPollingState[groupId] = (selectedSubIndex + 1) % subsInGroup.length;
-                    }
-                }
-                updatedPollingState.group_polling_indices = groupPollingState;
-            } else if (mode === 'request') {
-                const startIndex = profile.polling_index || 0;
-                selectedSources.push({ type: 'subscription', sub: activeSubscriptions[startIndex % activeSubscriptions.length] });
-                if (!isDryRun) {
-                    updatedPollingState.polling_index = (startIndex + 1) % activeSubscriptions.length;
-                }
-            } else { // hourly
-                const hour = new Date().getHours();
-                selectedSources.push({ type: 'subscription', sub: activeSubscriptions[hour % activeSubscriptions.length] });
-            }
-        } else { // use_all
-            for (const sub of activeSubscriptions) {
-                selectedSources.push({ type: 'subscription', sub });
-            }
+            groupedSubs[groupId].push(sub);
         }
-    } else {
-        // For local mode, we always pass all subscriptions downstream to let generateProfileNodes handle the fetching logic.
+        for (const groupId in groupedSubs) {
+            const subsInGroup = groupedSubs[groupId];
+            const randomIndex = Math.floor(Math.random() * subsInGroup.length);
+            selectedSources.push({ type: 'subscription', sub: subsInGroup[randomIndex] });
+        }
+    } else if (strategy === 'polling') {
+        const mode = airportOptions.polling_mode || 'hourly';
+        strategy = `polling (${mode})`;
+
+        if (mode === 'group_request') {
+            const groupedSubs: Record<string, any[]> = {};
+            for (const sub of activeSubscriptions) {
+                const groupId = sub.group_id || 'ungrouped';
+                if (!groupedSubs[groupId]) groupedSubs[groupId] = [];
+                groupedSubs[groupId].push(sub);
+            }
+            const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+            for (const groupId in groupedSubs) {
+                const subsInGroup = groupedSubs[groupId];
+                const startIndex = groupPollingState[groupId] || 0;
+                const selectedSubIndex = startIndex % subsInGroup.length;
+                selectedSources.push({ type: 'subscription', sub: subsInGroup[selectedSubIndex] });
+                if (!isDryRun) {
+                    groupPollingState[groupId] = (selectedSubIndex + 1) % subsInGroup.length;
+                }
+            }
+            updatedPollingState.group_polling_indices = groupPollingState;
+        } else if (mode === 'request') {
+            const startIndex = profile.polling_index || 0;
+            selectedSources.push({ type: 'subscription', sub: activeSubscriptions[startIndex % activeSubscriptions.length] });
+            if (!isDryRun) {
+                updatedPollingState.polling_index = (startIndex + 1) % activeSubscriptions.length;
+            }
+        } else { // hourly
+            const hour = new Date().getHours();
+            selectedSources.push({ type: 'subscription', sub: activeSubscriptions[hour % activeSubscriptions.length] });
+        }
+    } else { // 'all' or default
         for (const sub of activeSubscriptions) {
             selectedSources.push({ type: 'subscription', sub });
         }
@@ -124,9 +123,20 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
     let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
     
     if (content.subscription_ids && content.subscription_ids.length > 0) {
-        const subs = await env.DB.prepare(`SELECT * FROM subscriptions WHERE id IN (${content.subscription_ids.map(()=>'?').join(',')}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<any>();
+        const CHUNK_SIZE = 50;
+        const allSubIds = content.subscription_ids;
+        let allSubs: any[] = [];
+
+        for (let i = 0; i < allSubIds.length; i += CHUNK_SIZE) {
+            const chunk = allSubIds.slice(i, i + CHUNK_SIZE);
+            const query = `SELECT * FROM subscriptions WHERE id IN (${chunk.map(() => '?').join(',')}) AND user_id = ?`;
+            const { results: subsInChunk } = await env.DB.prepare(query).bind(...chunk, userId).all<any>();
+            if (subsInChunk) {
+                allSubs = allSubs.concat(subsInChunk);
+            }
+        }
         
-        const { selectedSources, updatedPollingState, strategy } = await selectSourcesByStrategy(profile, subs.results, isDryRun);
+        const { selectedSources, updatedPollingState, strategy } = await selectSourcesByStrategy(profile, allSubs, isDryRun);
 
         if (strategy === 'polling (group_request)' && content.generation_mode === 'local') {
             const pollingThreshold = airportOptions.polling_threshold || 5;

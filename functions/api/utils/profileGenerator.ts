@@ -40,8 +40,20 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 let manualNodeLinks: string[] = [];
 
                 if (content.subscription_ids && content.subscription_ids.length > 0) {
-                    const subs = await c.env.DB.prepare(`SELECT * FROM subscriptions WHERE id IN (${content.subscription_ids.map(()=>'?').join(',')}) AND user_id = ?`).bind(...content.subscription_ids, userId).all();
-                    const { selectedSources, updatedPollingState, strategy } = await selectSourcesByStrategy(profile, subs.results, isDryRun);
+                    const CHUNK_SIZE = 50;
+                    const allSubIds = content.subscription_ids;
+                    let allSubs: any[] = [];
+
+                    for (let i = 0; i < allSubIds.length; i += CHUNK_SIZE) {
+                        const chunk = allSubIds.slice(i, i + CHUNK_SIZE);
+                        const query = `SELECT * FROM subscriptions WHERE id IN (${chunk.map(() => '?').join(',')}) AND user_id = ?`;
+                        const { results: subsInChunk } = await c.env.DB.prepare(query).bind(...chunk, userId).all();
+                        if (subsInChunk) {
+                            allSubs = allSubs.concat(subsInChunk);
+                        }
+                    }
+                    
+                    const { selectedSources, updatedPollingState, strategy } = await selectSourcesByStrategy(profile, allSubs, isDryRun);
                     
                     subscriptionUrls.push(...selectedSources.map(s => s.sub.url));
                     
