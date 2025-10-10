@@ -339,7 +339,7 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                           :options="[
                             { label: '全部使用 (推荐)', value: 'all' },
                             { label: '轮询', value: 'polling' },
-                            { label: '随机选择', value: 'random' },
+                            { label: '分组随机', value: 'random' },
                           ]"
                           style="width: 180px"
                         />
