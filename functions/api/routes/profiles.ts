@@ -404,7 +404,7 @@ profiles.get('/', async (c) => {
 profiles.post('/', async (c) => {
     const user = c.get('jwtPayload');
     const body = await c.req.json<any>();
-    const id = crypto.randomUUID();
+    const profileId = crypto.randomUUID();
     const now = new Date().toISOString();
 
     if (!body.name || typeof body.name !== 'string' || body.name.trim() === '') {
@@ -414,6 +414,7 @@ profiles.post('/', async (c) => {
     const name = body.name.trim();
     const alias = body.alias || null;
     const content = JSON.parse(body.content || '{}');
+    const rules = body.rules || [];
 
     const contentPayload = {
         subscription_ids: content.subscription_ids,
@@ -425,12 +426,61 @@ profiles.post('/', async (c) => {
         generation_mode: content.generation_mode || 'local',
     };
 
-    await c.env.DB.prepare(
-        `INSERT INTO profiles (id, user_id, name, alias, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, user.id, name, alias, JSON.stringify(contentPayload), now, now).run();
-    
-    return c.json({ success: true, data: { id } }, 201);
+    try {
+        const statements = [];
+
+        // 1. Insert the profile
+        statements.push(
+            c.env.DB.prepare(
+                `INSERT INTO profiles (id, user_id, name, alias, content, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).bind(profileId, user.id, name, alias, JSON.stringify(contentPayload), now, now)
+        );
+
+        // 2. Insert the rules, if any
+        if (rules.length > 0) {
+            const ruleInsertStm = c.env.DB.prepare(
+                `INSERT INTO profile_rules (user_id, profile_id, name, type, value, enabled, sort_order, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            );
+            for (const [index, rule] of rules.entries()) {
+                const { name, type, value, enabled, sort_order } = rule;
+
+                // Data validation
+                if (!name || typeof name !== 'string' || name.trim() === '') {
+                    return c.json({ success: false, message: `Rule ${index + 1} is missing a name.` }, 400);
+                }
+                if (!type || typeof type !== 'string') {
+                    return c.json({ success: false, message: `Rule "${name}" is missing a type.` }, 400);
+                }
+                if (value === undefined || value === null || typeof value !== 'string') {
+                     return c.json({ success: false, message: `Rule "${name}" is missing a value.` }, 400);
+                }
+
+                statements.push(
+                    ruleInsertStm.bind(
+                        user.id,
+                        profileId,
+                        name.trim(),
+                        type,
+                        value,
+                        enabled === 1 ? 1 : 0,
+                        sort_order ?? index,
+                        now,
+                        now
+                    )
+                );
+            }
+        }
+
+        await c.env.DB.batch(statements);
+        
+        return c.json({ success: true, data: { id: profileId } }, 201);
+
+    } catch (e: any) {
+        console.error('Failed to create profile with rules:', e.message);
+        return c.json({ success: false, message: 'Failed to create profile.', error: e.message }, 500);
+    }
 });
 
 profiles.get('/:id', async (c) => {
