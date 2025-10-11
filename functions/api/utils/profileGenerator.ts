@@ -40,24 +40,41 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 let manualNodeLinks: string[] = [];
 
                 if (content.subscription_ids && content.subscription_ids.length > 0) {
-                    const CHUNK_SIZE = 50;
-                    const allSubIds = content.subscription_ids;
-                    let allSubs: any[] = [];
+                    const strategyResult = await selectSourcesByStrategy(c, profile, isDryRun);
+                    let { updatedPollingState, strategy } = strategyResult;
 
-                    for (let i = 0; i < allSubIds.length; i += CHUNK_SIZE) {
-                        const chunk = allSubIds.slice(i, i + CHUNK_SIZE);
-                        const query = `SELECT * FROM subscriptions WHERE id IN (${chunk.map(() => '?').join(',')}) AND user_id = ?`;
-                        const { results: subsInChunk } = await c.env.DB.prepare(query).bind(...chunk, userId).all();
-                        if (subsInChunk) {
-                            allSubs = allSubs.concat(subsInChunk);
+                    if (strategyResult.type === 'selection') {
+                        subscriptionUrls.push(...strategyResult.selectedSources.map((s: any) => s.sub.url));
+                    } else if (strategyResult.type === 'candidates') {
+                        // This is for remote 'group_request'
+                        const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+                        const groupPromises = Array.from(strategyResult.candidateSets.entries()).map(async ([groupId, cs]) => {
+                            const query = `
+                                SELECT url FROM subscriptions
+                                WHERE user_id = ? AND ${groupId === 'ungrouped' ? 'group_id IS NULL' : 'group_id = ?'}
+                                ORDER BY id
+                                LIMIT 1 OFFSET ?
+                            `;
+                            const queryParams: any[] = [userId];
+                            if (groupId !== 'ungrouped') queryParams.push(groupId);
+                            queryParams.push(cs.startIndex);
+                            
+                            const result = await c.env.DB.prepare(query).bind(...queryParams).first();
+                            if (result) {
+                                subscriptionUrls.push(result.url);
+                                const newIndex = (cs.startIndex + 1) % cs.totalInGroup;
+                                groupPollingState[groupId] = newIndex;
+                            }
+                        });
+
+                        await Promise.all(groupPromises);
+                        
+                        if (Object.keys(groupPollingState).length > 0) {
+                            updatedPollingState = { ...updatedPollingState, group_polling_indices: groupPollingState };
                         }
                     }
                     
-                    const { selectedSources, updatedPollingState, strategy } = await selectSourcesByStrategy(profile, allSubs, isDryRun);
-                    
-                    subscriptionUrls.push(...selectedSources.map(s => s.sub.url));
-                    
-                    if (!isDryRun && Object.keys(updatedPollingState).length > 0) {
+                    if (Object.keys(updatedPollingState).length > 0) {
                         let setClauses = [];
                         let bindings: (string | number | undefined)[] = [];
                         if (updatedPollingState.polling_index !== undefined) {

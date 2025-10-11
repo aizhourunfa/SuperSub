@@ -43,6 +43,7 @@ const defaultFormState = () => ({
     random: false,
     timeout: 10 as number | null,
     polling_threshold: 5 as number | null,
+    polling_interval: 200 as number | null,
   },
   node_prefix_settings: {
     enable_subscription_prefix: false,
@@ -118,6 +119,7 @@ const fetchProfileData = async (id: string) => {
       formState.airport_subscription_options.polling_mode = opts.polling_mode || 'hourly';
       formState.airport_subscription_options.timeout = opts.timeout || 10;
       formState.airport_subscription_options.polling_threshold = opts.polling_threshold || 5;
+      formState.airport_subscription_options.polling_interval = opts.polling_interval || 200;
       formState.subconverter_backend_id = profile.subconverter_backend_id || null;
       formState.subconverter_config_id = profile.subconverter_config_id || null;
       formState.generation_mode = profile.generation_mode || 'local';
@@ -199,6 +201,7 @@ const handleSave = async () => {
           polling_mode: formState.airport_subscription_options.polling_mode,
           timeout: formState.airport_subscription_options.timeout,
           polling_threshold: formState.airport_subscription_options.polling_threshold,
+          polling_interval: formState.airport_subscription_options.polling_interval,
         },
         subconverter_backend_id: formState.subconverter_backend_id,
         subconverter_config_id: formState.subconverter_config_id,
@@ -362,6 +365,17 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                           v-model:value="formState.airport_subscription_options.polling_threshold"
                           :min="1"
                           placeholder="默认5"
+                          clearable
+                          style="width: 120px"
+                        />
+                      </n-form-item>
+
+                      <n-form-item v-if="formState.airport_subscription_options.strategy === 'polling' && formState.airport_subscription_options.polling_mode === 'group_request'" label="探测间隔(ms)" label-placement="left" class="mb-0">
+                        <n-input-number
+                          v-model:value="formState.airport_subscription_options.polling_interval"
+                          :min="0"
+                          :step="100"
+                          placeholder="默认200"
                           clearable
                           style="width: 120px"
                         />
