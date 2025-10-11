@@ -15,3 +15,9 @@ export type AppContext = {
     };
   };
 };
+export interface LogEntry {
+  level: 'info' | 'warn' | 'error' | 'success';
+  message: string;
+  timestamp: string;
+  data?: any; // Optional structured data
+}

@@ -4,9 +4,11 @@ import { Context } from 'hono';
 import { generateProfileNodes, selectSourcesByStrategy, applyAllRules } from '../routes/profiles';
 import { regenerateLink, parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
 import { parseSubscriptionContent, userAgents } from '../routes/subscriptions';
+import { Logger } from './logger';
 
-export const generateSubscription = async (c: any, profile: any, isDryRun: boolean = false) => {
+export const generateSubscription = async (c: any, profile: any, isDryRun: boolean = false, logger: Logger) => {
     const content = JSON.parse(profile.content || '{}');
+    logger.info(`开始处理配置文件: "${profile.name}"`, { profileId: profile.id });
 
     let result: any;
 
@@ -27,26 +29,34 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 for (const mapping of uaMappings as any[]) {
                     if (userAgent.toLowerCase().includes(mapping.ua_keyword.toLowerCase())) {
                         targetClient = mapping.client_type;
+                        logger.info(`通过 User-Agent 自动识别客户端为: ${targetClient}`, { userAgent });
                         break;
                     }
                 }
             }
+            logger.info(`最终目标客户端: ${targetClient}`);
+
             let subconverterUrlInput = '';
             let isLocalContentBase64 = false;
             let localContent = '';
+            const generationMode = content.generation_mode || 'local';
+            logger.info(`解析模式: ${generationMode}`);
 
-            if (content.generation_mode === 'remote') {
+            if (generationMode === 'remote') {
                 let subscriptionUrls: string[] = [];
                 let manualNodeLinks: string[] = [];
 
                 if (content.subscription_ids && content.subscription_ids.length > 0) {
-                    const strategyResult = await selectSourcesByStrategy(c, profile, isDryRun);
+                    logger.info('开始根据策略选择订阅源...');
+                    const strategyResult = await selectSourcesByStrategy(c, profile, isDryRun, logger);
                     let { updatedPollingState, strategy } = strategyResult;
+                    logger.success(`订阅选择策略: ${strategy}`);
 
                     if (strategyResult.type === 'selection') {
                         subscriptionUrls.push(...strategyResult.selectedSources.map((s: any) => s.sub.url));
+                        logger.info(`选择了 ${strategyResult.selectedSources.length} 个订阅源`, { urls: subscriptionUrls });
                     } else if (strategyResult.type === 'candidates') {
-                        // This is for remote 'group_request'
+                        logger.info('正在处理 "分组轮询" 策略 (远程模式)...');
                         const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
                         const groupPromises = Array.from(strategyResult.candidateSets.entries()).map(async ([groupId, cs]) => {
                             const query = `
@@ -61,9 +71,12 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                             
                             const result = await c.env.DB.prepare(query).bind(...queryParams).first();
                             if (result) {
+                                logger.success(`分组 "${groupId}" 选择了订阅: ${result.url}`);
                                 subscriptionUrls.push(result.url);
                                 const newIndex = (cs.startIndex + 1) % cs.totalInGroup;
                                 groupPollingState[groupId] = newIndex;
+                            } else {
+                                logger.warn(`分组 "${groupId}" 在轮询中没有找到可用的订阅。`);
                             }
                         });
 
@@ -74,7 +87,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                         }
                     }
                     
-                    if (Object.keys(updatedPollingState).length > 0) {
+                    if (Object.keys(updatedPollingState).length > 0 && !isDryRun) {
                         let setClauses = [];
                         let bindings: (string | number | undefined)[] = [];
                         if (updatedPollingState.polling_index !== undefined) {
@@ -88,14 +101,19 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                         if (setClauses.length > 0) {
                             const updateQuery = `UPDATE profiles SET ${setClauses.join(', ')} WHERE id = ?`;
                             bindings.push(profile.id);
+                            logger.info('正在更新数据库中的轮询状态...', { state: updatedPollingState });
                             c.executionCtx.waitUntil(c.env.DB.prepare(updateQuery).bind(...bindings).run());
                         }
                     }
+                } else {
+                    logger.info('配置文件中未包含任何订阅。');
                 }
 
                 if (content.node_ids && content.node_ids.length > 0) {
+                    logger.info(`准备合并 ${content.node_ids.length} 个手动添加的节点...`);
                     const { results: manualNodes } = await c.env.DB.prepare(`SELECT link FROM nodes WHERE id IN (${content.node_ids.map(()=>'?').join(',')}) AND user_id = ?`).bind(...content.node_ids, userId).all();
                     manualNodeLinks = (manualNodes as any[]).map(n => n.link);
+                    logger.success(`成功获取 ${manualNodeLinks.length} 个手动节点的链接。`);
                 }
 
                 const finalUrlParts = [...subscriptionUrls];
@@ -106,16 +124,17 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
 
                     const selfUrl = new URL(c.req.url);
                     const nodesUrl = `${selfUrl.origin}/api/public/nodes?content=${encodedContent}`;
-                    
+                    logger.info('已将手动节点转换为一个临时的 base64 订阅链接', { url: nodesUrl });
                     finalUrlParts.push(nodesUrl);
                 }
                 
                 if (finalUrlParts.length > 0) {
                     subconverterUrlInput = finalUrlParts.join('|');
+                    logger.info('最终组合的订阅链接已生成', { combinedUrl: subconverterUrlInput });
                 }
 
             } else { // 'local' mode
-                const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, isDryRun);
+                const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, isDryRun, logger);
                 
                 if (isDryRun) {
                     const analysis = {
@@ -132,41 +151,50 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                             return acc;
                         }, {} as Record<string, number>),
                     };
-                    return { type: 'json', payload: { success: true, data: { mode: 'local', nodes: allNodes, analysis: analysis } } };
+                    logger.success(`预览生成完成，共 ${allNodes.length} 个节点。`);
+                    return { type: 'json', payload: { success: true, data: { mode: 'local', nodes: allNodes, analysis: analysis, logs: logger.logs } } };
                 }
 
-                if (allNodes.length === 0) return { type: 'text', payload: 'No nodes found for this profile.', status: 404 };
+                if (allNodes.length === 0) {
+                    logger.warn('没有找到任何可用节点。');
+                    return { type: 'text', payload: 'No nodes found for this profile.', status: 404 };
+                }
                 
                 localContent = allNodes.map(regenerateLink).filter(Boolean).join('\n');
+                logger.success(`本地内容生成完成，共 ${allNodes.length} 个节点。`);
                 
                 if (query.b64 || targetClient === 'base64') {
+                    logger.info('将直接返回 Base64 编码的内容。');
                     isLocalContentBase64 = true;
                 } else {
                     const currentUrl = new URL(c.req.url);
                     currentUrl.searchParams.set('b64', '1');
                     subconverterUrlInput = `${currentUrl.toString()}&_t=${Date.now()}`;
+                    logger.info('将通过 Subconverter 处理本地生成的节点列表。', { subconverterUrlInput });
                 }
             }
 
             if (isDryRun) {
-                if (content.generation_mode === 'remote') {
+                if (generationMode === 'remote') {
                     const finalUrls = subconverterUrlInput ? subconverterUrlInput.split('|') : [];
+                    logger.info(`远程模式预览: 准备获取并解析 ${finalUrls.length} 个链接...`, { urls: finalUrls });
                     
                     if (finalUrls.length === 0) {
-                        return { type: 'json', payload: { success: true, data: { mode: 'remote', nodes: [], analysis: { total: 0, protocols: {}, regions: {} } } } };
+                        logger.warn('远程模式预览: 没有可供解析的链接。');
+                        return { type: 'json', payload: { success: true, data: { mode: 'remote', nodes: [], analysis: { total: 0, protocols: {}, regions: {} }, logs: logger.logs } } };
                     }
 
                     const fetchPromises = finalUrls.map(url =>
                         fetch(url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } })
                         .then(res => {
                             if (!res.ok) {
-                                console.error(`获取预览URL失败: HTTP状态 ${res.status}`, { url });
+                                logger.error(`获取预览URL失败: HTTP状态 ${res.status}`, { url });
                                 return '';
                             }
                             return res.text();
                         })
                         .catch(err => {
-                            console.error(`获取预览URL时发生网络错误: ${err.message}`, { url });
+                            logger.error(`获取预览URL时发生网络错误: ${err.message}`, { url });
                             return '';
                         })
                     );
@@ -180,8 +208,9 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                             allNodes.push(...nodes);
                         }
                     }
+                    logger.info(`远程模式预览: 初始解析得到 ${allNodes.length} 个节点。`);
                     
-                    const finalNodes = await applyAllRules(c.env.DB, profile.user_id, profile.id, allNodes);
+                    const finalNodes = await applyAllRules(c.env.DB, profile.user_id, profile.id, allNodes, logger);
                     
                     const analysis = {
                         total: finalNodes.length,
@@ -197,8 +226,10 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                             return acc;
                         }, {}),
                     };
-                    return { type: 'json', payload: { success: true, data: { mode: 'remote', nodes: finalNodes, analysis: analysis } } };
+                    logger.success(`远程模式预览完成，最终获得 ${finalNodes.length} 个节点。`);
+                    return { type: 'json', payload: { success: true, data: { mode: 'remote', nodes: finalNodes, analysis: analysis, logs: logger.logs } } };
                 }
+                logger.error('预览逻辑出现未处理的错误。');
                 return { type: 'text', payload: '预览逻辑出现未处理的错误。', status: 500 };
             }
 
@@ -206,18 +237,21 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 return { type: 'text', payload: Buffer.from(localContent, 'utf-8').toString('base64') };
             }
 
-            if (subconverterUrlInput && (targetClient !== 'base64' || content.generation_mode === 'remote')) {
+            if (subconverterUrlInput && (targetClient !== 'base64' || generationMode === 'remote')) {
                 let finalTargetClient = targetClient;
-                if (targetClient === 'base64' && content.generation_mode === 'remote') {
+                if (targetClient === 'base64' && generationMode === 'remote') {
                     finalTargetClient = 'clash'; // 远程模式若未指定客户端，则默认为 clash
+                    logger.info(`远程模式未指定客户端，默认使用: ${finalTargetClient}`);
                 }
+                logger.info(`准备请求 Subconverter...`, { target: finalTargetClient });
                 const backend = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_backend_id).first();
                 const config = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_config_id).first();
 
                 if (!backend || !config) {
-                    console.error('无法找到 Subconverter 后端或配置文件。');
+                    logger.error('无法找到 Subconverter 后端或配置文件。');
                     return { type: 'text', payload: 'Subconverter 后端或配置文件未找到。', status: 500 };
                 }
+                logger.info('已找到 Subconverter 后端和配置文件。', { backendUrl: (backend as any).url, configUrl: (config as any).url });
 
                 const targetUrl = new URL((backend as any).url + '/sub');
                 targetUrl.searchParams.set('target', finalTargetClient);
@@ -225,27 +259,31 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 targetUrl.searchParams.set('config', (config as any).url);
                 targetUrl.searchParams.set('filename', profile.name);
                 
+                logger.info('向 Subconverter 发起请求...', { url: targetUrl.toString() });
                 const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': userAgent } });
                 
                 if (!subResponse.ok) {
                     const errorText = await subResponse.text();
-                    console.error('Subconverter 请求失败。', { '错误信息': errorText });
+                    logger.error('Subconverter 请求失败。', { error: errorText });
                     return { type: 'text', payload: `从 subconverter 生成失败: ${errorText}`, status: 502 };
                 }
+                logger.success('Subconverter 请求成功，正在返回订阅流。');
                 return { type: 'stream', payload: subResponse };
             }
 
             if (!subconverterUrlInput && !localContent) {
+                logger.warn('没有为指定的客户端生成任何内容。');
                 return { type: 'text', payload: '没有为指定的客户端生成任何内容。', status: 404 };
             }
             
+            logger.error('没有为指定的客户端生成任何内容。');
             return { type: 'text', payload: '没有为指定的客户端生成任何内容。', status: 404 };
         };
 
         result = await mainLogic();
 
     } catch (e: any) {
-        console.error(`处理配置文件 '${profile.name}' 时发生致命错误`, { '错误信息': e.message, '堆栈': e.stack });
+        logger.error(`处理配置文件 '${profile.name}' 时发生致命错误`, { error: e.message, stack: e.stack });
         result = { type: 'text', payload: `内部服务器错误: ${e.message}`, status: 500 };
     }
 

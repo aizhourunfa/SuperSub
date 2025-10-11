@@ -2,13 +2,13 @@
 import { ref, onMounted, computed, h } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
-import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NSpin, NIcon, NTag, NStatistic, NCard, NGrid, NGi, NScrollbar, NLog } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NSpin, NIcon, NTag, NStatistic, NCard, NGrid, NGi, NScrollbar, NLog, NSteps, NStep, NCode } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
-import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
+import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon, DocumentTextOutline as LogIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
 import { LogoutInProgressError } from '@/utils/errors';
-import type { ApiResponse, Profile, Subscription, Node, LogEntry } from '@/types';
+import type { ApiResponse, Profile, Subscription, Node, LogEntry, LogLevel } from '@/types';
 import { regenerateLink, type ParsedNode } from '@/utils/nodeParser';
 import { getNaiveTagColor } from '@/utils/colors';
 
@@ -23,6 +23,7 @@ const subToken = computed(() => authStore.user?.sub_token || '');
 
 // For Nodes Preview Modal
 const showNodesPreviewModal = ref(false);
+const showLogsModal = ref(false);
 const loadingNodesPreview = ref(false);
 const currentProfileForPreview = ref<Profile | null>(null);
 const nodesPreviewData = ref<{
@@ -33,12 +34,29 @@ const nodesPreviewData = ref<{
     regions: Record<string, number>;
   };
   mode: 'local' | 'remote';
+  logs: LogEntry[];
 } | null>(null);
+
+const getStepStatus = (level: LogLevel) => {
+  switch (level) {
+    case 'ERROR':
+      return 'error';
+    case 'WARN':
+      return 'error'; // Naive UI doesn't have 'warning', map to 'error' to highlight
+    case 'SUCCESS':
+      return 'finish';
+    case 'INFO':
+    case 'STEP':
+    case 'DEBUG':
+    default:
+      return 'process';
+  }
+};
 
 const nodes = computed(() => nodesPreviewData.value?.nodes || []);
 
 const previewNodeColumns: DataTableColumns<Partial<Node>> = [
-  { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
+  { title: '节点名称', key: 'name', width: 300, ellipsis: { tooltip: true } },
   {
     title: '类型',
     key: 'type',
@@ -53,7 +71,7 @@ const previewNodeColumns: DataTableColumns<Partial<Node>> = [
         }, { default: () => protocol.toUpperCase() });
     }
   },
-  { title: '服务器', key: 'server', width: 150, ellipsis: { tooltip: true } },
+  { title: '服务器', key: 'server', width: 200, ellipsis: { tooltip: true } },
   { title: '端口', key: 'port', width: 80, align: 'center' },
   {
     title: '操作',
@@ -224,6 +242,14 @@ onMounted(() => {
           <n-grid :cols="1">
             <n-gi>
               <n-card title="订阅分析" :bordered="false">
+                <template #header-extra>
+                  <n-button v-if="nodesPreviewData.logs && nodesPreviewData.logs.length > 0" text @click="showLogsModal = true">
+                    <template #icon>
+                      <n-icon><log-icon /></n-icon>
+                    </template>
+                    查看日志
+                  </n-button>
+                </template>
                 <n-grid :cols="3" :x-gap="12">
                   <n-gi><n-statistic label="节点总数" :value="nodesPreviewData.analysis.total" /></n-gi>
                   <n-gi>
@@ -248,6 +274,24 @@ onMounted(() => {
         </div>
         <div v-else-if="!loadingNodesPreview" style="text-align: center; padding: 20px;">没有获取到节点数据。</div>
       </n-spin>
+    </n-modal>
+
+    <!-- Logs Modal -->
+    <n-modal v-model:show="showLogsModal" preset="card" title="上帝视角日志" style="width: 900px; max-height: 80vh;" :mask-closable="true" :trap-focus="false">
+      <n-scrollbar style="max-height: 70vh; padding-right: 16px;">
+        <n-steps vertical>
+          <template v-for="log in nodesPreviewData?.logs" :key="log.timestamp">
+            <n-step :title="log.message" :status="getStepStatus(log.level)">
+              <p style="font-size: 12px; color: #999; margin-top: 4px; margin-bottom: 8px;">{{ new Date(log.timestamp).toLocaleString() }}</p>
+              <div v-if="log.data">
+                <n-card size="small" :bordered="true">
+                  <n-code :code="JSON.stringify(log.data, null, 2)" language="json" word-wrap />
+                </n-card>
+              </div>
+            </n-step>
+          </template>
+        </n-steps>
+      </n-scrollbar>
     </n-modal>
   </div>
 </template>

@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import type { AppContext } from '../utils/types';
 import { sendTelegramMessage } from '../utils/telegram';
 import { generateSubscription } from '../utils/profileGenerator';
+import { Logger } from '../utils/logger';
 
 const publicRoutes = new Hono<AppContext>();
 
@@ -22,7 +23,8 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
     c.executionCtx.waitUntil(sendTelegramMessage(c.env, user.id, "Subscription accessed")); // Simplified message for now
 
     // 3. Generate subscription content by calling the centralized generator
-    return generateSubscription(c, profile, false);
+    const logger = new Logger();
+    return generateSubscription(c, profile, false, logger);
 });
 
 // This route serves raw node content from a base64 encoded string

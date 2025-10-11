@@ -5,6 +5,7 @@ import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
 import { applySubscriptionRules, parseSubscriptionContent } from './subscriptions';
 import { fetchSubscriptionContent } from '../utils/network';
 import { generateSubscription } from '../utils/profileGenerator';
+import { Logger } from '../utils/logger';
 
 const profiles = new Hono<{ Bindings: Env }>();
 
@@ -40,7 +41,7 @@ export type StrategyResult = {
 });
 
 
-export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: boolean = false): Promise<StrategyResult> => {
+export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: boolean = false, logger: Logger): Promise<StrategyResult> => {
     const db = c.env.DB;
     const userId = profile.user_id;
     const content = JSON.parse(profile.content || '{}');
@@ -56,8 +57,10 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         else if (airportOptions.random) strategy = 'random';
         else strategy = 'all'; // Default fallback
     }
+    logger.info(`使用的订阅选择策略: ${strategy}`, { airportOptions });
 
     if (subIds.length === 0) {
+        logger.warn('此配置文件不包含任何订阅。');
         return { type: 'selection', selectedSources: [], updatedPollingState, strategy: 'none' };
     }
 
@@ -66,6 +69,7 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         const CHUNK_SIZE = 50; // Safe chunk size for IN clause
         const pollingThreshold = airportOptions.polling_threshold || 5;
         const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+        logger.info(`执行 "分组轮询" 策略，每组探测 ${pollingThreshold} 个候选。`);
 
         // 1. Get group counts for all *selected* subscriptions, in chunks
         const groupCountsMap = new Map<string, number>();
@@ -85,8 +89,10 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
                 }
             }
         }
+        logger.info('已统计所有订阅的分组情况。', { groupCounts: Object.fromEntries(groupCountsMap) });
 
         if (groupCountsMap.size === 0) {
+            logger.warn('未找到任何订阅分组。');
             return { type: 'selection', selectedSources: [], updatedPollingState, strategy: 'polling (group_request)' };
         }
 
@@ -96,6 +102,7 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         for (const [groupId, totalInGroup] of groupCountsMap.entries()) {
             const startIndex = groupPollingState[groupId] || 0;
             const effectiveStartIndex = startIndex % totalInGroup;
+            logger.info(`为分组 "${groupId}" 准备候选集...`, { totalInGroup, startIndex: effectiveStartIndex });
 
             const candidatesQuery = `
                 SELECT id, name, url, group_id
@@ -114,11 +121,14 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
             const { results: candidates } = await db.prepare(candidatesQuery).bind(...queryParams).all();
             
             if (candidates && candidates.length > 0) {
+                logger.success(`已为分组 "${groupId}" 获取 ${candidates.length} 个候选订阅。`, { candidates: candidates.map((c: any) => c.name) });
                 candidateSets.set(groupId, {
                     candidates,
                     totalInGroup,
                     startIndex: effectiveStartIndex
                 });
+            } else {
+                logger.warn(`为分组 "${groupId}" 获取候选订阅失败。`);
             }
         }
         
@@ -141,6 +151,7 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
             allSubs = allSubs.concat(subsInChunk);
         }
     }
+    logger.info(`已获取全部 ${allSubs.length} 个相关订阅的详细信息。`);
 
     let selectedSources: SelectedSource[] = [];
 
@@ -154,7 +165,9 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         for (const groupId in groupedSubs) {
             const subsInGroup = groupedSubs[groupId];
             const randomIndex = Math.floor(Math.random() * subsInGroup.length);
-            selectedSources.push({ type: 'subscription', sub: subsInGroup[randomIndex] });
+            const selected = subsInGroup[randomIndex];
+            logger.success(`在分组 "${groupId}" 中随机选择了订阅: "${selected.name}"`);
+            selectedSources.push({ type: 'subscription', sub: selected });
         }
     } else if (strategy === 'polling') {
         const mode = airportOptions.polling_mode || 'hourly';
@@ -162,13 +175,18 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
 
         if (mode === 'request') {
             const startIndex = profile.polling_index || 0;
-            selectedSources.push({ type: 'subscription', sub: allSubs[startIndex % allSubs.length] });
+            const selected = allSubs[startIndex % allSubs.length];
+            logger.success(`按 "请求轮询" 策略选择了第 ${startIndex} 个订阅: "${selected.name}"`);
+            selectedSources.push({ type: 'subscription', sub: selected });
             updatedPollingState.polling_index = (startIndex + 1) % allSubs.length;
         } else { // hourly
             const hour = new Date().getHours();
-            selectedSources.push({ type: 'subscription', sub: allSubs[hour % allSubs.length] });
+            const selected = allSubs[hour % allSubs.length];
+            logger.success(`按 "小时轮询" 策略选择了第 ${hour % allSubs.length} 个订阅: "${selected.name}"`);
+            selectedSources.push({ type: 'subscription', sub: selected });
         }
     } else { // 'all' or default
+        logger.info('策略为 "all"，选择所有订阅。');
         for (const sub of allSubs) {
             selectedSources.push({ type: 'subscription', sub });
         }
@@ -178,22 +196,28 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
 };
 
 
-export const applyAllRules = async (db: D1Database, userId: string, profileId: string, nodes: (ParsedNode & { id: string; raw: string; })[]): Promise<(ParsedNode & { id: string; raw: string; })[]> => {
+export const applyAllRules = async (db: D1Database, userId: string, profileId: string, nodes: (ParsedNode & { id: string; raw: string; })[], logger: Logger): Promise<(ParsedNode & { id: string; raw: string; })[]> => {
     let processedNodes = [...nodes];
+    logger.info(`准备应用配置文件全局规则，当前节点数: ${processedNodes.length}`);
 
     const { results: profileRules } = await db.prepare(
         'SELECT * FROM profile_rules WHERE profile_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC'
     ).bind(profileId, userId).all<any>();
 
     if (profileRules && profileRules.length > 0) {
+        logger.info(`找到 ${profileRules.length} 条启用的全局规则。`);
+        const initialCount = processedNodes.length;
         processedNodes = applySubscriptionRules(processedNodes, profileRules);
+        logger.success(`全局规则应用完毕，节点数变化: ${initialCount} -> ${processedNodes.length}`);
+    } else {
+        logger.info('没有找到启用的全局规则。');
     }
 
     return processedNodes;
 };
 
 
-export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any, isDryRun: boolean = false): Promise<(ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[]> => {
+export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any, isDryRun: boolean = false, logger: Logger): Promise<(ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[]> => {
     const content = JSON.parse(profile.content || '{}');
     const userId = profile.user_id;
     const airportOptions = content.airport_subscription_options || {};
@@ -202,31 +226,37 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
     let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
     
     if (content.subscription_ids && content.subscription_ids.length > 0) {
+        logger.info('开始处理配置文件中的订阅...');
         // Mock Hono context for selectSourcesByStrategy
         const mockContext = {
             env: { DB: env.DB },
             get: (key: string) => (key === 'jwtPayload' ? { id: userId } : undefined),
         };
 
-        const strategyResult = await selectSourcesByStrategy(mockContext, profile, isDryRun);
+        const strategyResult = await selectSourcesByStrategy(mockContext, profile, isDryRun, logger);
         const { updatedPollingState, strategy } = strategyResult;
 
         if (strategy === 'polling (group_request)' && strategyResult.type === 'candidates' && content.generation_mode === 'local') {
             const pollingInterval = airportOptions.polling_interval || 200;
             const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+            logger.info(`开始并发探测每个分组的候选订阅，探测间隔: ${pollingInterval}ms`);
             
             const findAvailableSubInGroup = async (groupId: string, candidateSet: CandidateSet) => {
+                logger.info(`开始探测分组 "${groupId}"...`);
                 const promises = candidateSet.candidates.map((sub, index) => {
                     return new Promise<any>(async (resolve, reject) => {
                         try {
                             await new Promise(res => setTimeout(res, index * pollingInterval));
                             const fetchedContent = await fetchSubscriptionContent(sub.url, timeout);
                             if (fetchedContent) {
+                                logger.success(`分组 "${groupId}" 的候选 "${sub.name}" 成功返回内容。`);
                                 resolve({ content: fetchedContent, sub, index });
                             } else {
+                                logger.warn(`分组 "${groupId}" 的候选 "${sub.name}" 返回内容为空。`);
                                 reject(new Error(`Content empty for ${sub.url}`));
                             }
                         } catch (error) {
+                            logger.error(`分组 "${groupId}" 的候选 "${sub.name}" 请求失败。`, { error });
                             reject(error);
                         }
                     });
@@ -235,14 +265,16 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                 try {
                     const firstSuccess = await Promise.any(promises);
                     let nodes = parseSubscriptionContent(firstSuccess.content);
+                    logger.info(`解析 "${firstSuccess.sub.name}" 成功，获得 ${nodes.length} 个节点。`);
                     const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: firstSuccess.sub.name }));
                     allNodes.push(...nodesWithSubName);
 
                     const newIndex = (candidateSet.startIndex + firstSuccess.index + 1) % candidateSet.totalInGroup;
                     groupPollingState[groupId] = newIndex;
+                    logger.info(`分组 "${groupId}" 的轮询索引将更新为 ${newIndex}。`);
 
                 } catch (error) {
-                    // All candidates failed, do nothing, the group will not have nodes this time.
+                    logger.error(`分组 "${groupId}" 的所有候选订阅均获取失败。`);
                 }
             };
 
@@ -255,11 +287,16 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
         } else if (strategyResult.type === 'selection') {
             const { selectedSources } = strategyResult;
+            logger.info(`准备获取 ${selectedSources.length} 个选定订阅的内容...`);
             const fetchPromises = selectedSources.map(async (source: any) => {
                 if (source.type === 'subscription') {
+                    logger.info(`正在获取 "${source.sub.name}" (${source.sub.url})...`);
                     const content = await fetchSubscriptionContent(source.sub.url, timeout);
                     if (content) {
+                        logger.success(`成功获取 "${source.sub.name}" 的内容。`);
                         return { ...source, content };
+                    } else {
+                        logger.warn(`获取 "${source.sub.name}" 的内容为空。`);
                     }
                 }
                 return null;
@@ -270,22 +307,27 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             for (const source of fetchedSources as any[]) {
                 if (source && source.content) {
                     let nodes = parseSubscriptionContent(source.content);
+                    logger.info(`解析 "${source.sub.name}" 成功，获得 ${nodes.length} 个节点。`);
                     let combinedRules = [];
 
                     if (source.sub.group_id) {
                         const { results: groupRules } = await env.DB.prepare('SELECT * FROM subscription_group_rules WHERE group_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(source.sub.group_id, userId).all();
                         if (groupRules && groupRules.length > 0) {
+                            logger.info(`"${source.sub.name}" 所在分组有 ${groupRules.length} 条规则，准备应用...`);
                             combinedRules.push(...groupRules);
                         }
                     }
 
                     const { results: subRules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(source.sub.id, userId).all();
                     if (subRules && subRules.length > 0) {
+                        logger.info(`"${source.sub.name}" 自身有 ${subRules.length} 条规则，准备应用...`);
                         combinedRules.push(...subRules);
                     }
 
                     if (combinedRules.length > 0) {
+                        const initialCount = nodes.length;
                         nodes = applySubscriptionRules(nodes, combinedRules);
+                        logger.success(`订阅/分组规则应用完毕，节点数变化: ${initialCount} -> ${nodes.length}`);
                     }
                     
                     const nodesWithSubName = nodes.map((node: any) => ({ ...node, subscriptionName: source.sub.name }));
@@ -294,7 +336,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             }
         }
         
-        if (Object.keys(updatedPollingState).length > 0) {
+        if (Object.keys(updatedPollingState).length > 0 && !isDryRun) {
             let setClauses = [];
             let bindings: (string | number | undefined)[] = [];
             if (updatedPollingState.polling_index !== undefined) {
@@ -309,12 +351,16 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             if (setClauses.length > 0) {
                 const query = `UPDATE profiles SET ${setClauses.join(', ')} WHERE id = ?`;
                 bindings.push(profile.id);
+                logger.info('正在更新数据库中的轮询状态...', { state: updatedPollingState });
                 executionCtx.waitUntil(env.DB.prepare(query).bind(...bindings).run());
             }
         }
+    } else {
+        logger.info('配置文件中未包含任何订阅。');
     }
 
     if (content.node_ids && content.node_ids.length > 0) {
+        logger.info(`准备合并 ${content.node_ids.length} 个手动添加的节点...`);
         const { results: manualNodes } = await env.DB.prepare(`
             SELECT n.*, g.name as group_name FROM nodes n
             LEFT JOIN node_groups g ON n.group_id = g.id
@@ -329,12 +375,14 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             isManual: true,
         }));
         allNodes.push(...parsedManualNodes);
+        logger.success(`成功合并 ${parsedManualNodes.length} 个手动节点。`);
     }
 
-    allNodes = await applyAllRules(env.DB, userId, profile.id, allNodes);
+    allNodes = await applyAllRules(env.DB, userId, profile.id, allNodes, logger);
 
     const prefixSettings = content.node_prefix_settings || {};
     if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
+        logger.info('开始应用节点名称前缀...');
         let prefixAppliedCount = 0;
         allNodes = allNodes.map(node => {
             if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
@@ -353,6 +401,9 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             }
             return node;
         });
+        logger.success(`前缀应用完毕，共为 ${prefixAppliedCount} 个节点添加了前缀。`);
+    } else {
+        logger.info('未配置或未启用节点名称前缀。');
     }
     
     return allNodes;
@@ -380,8 +431,9 @@ profiles.get('/:id/preview-nodes', async (c) => {
         return c.json({ success: false, message: 'Profile not found' }, 404);
     }
     
+    const logger = new Logger();
     // The preview route now calls the centralized generator with isDryRun = true
-    return generateSubscription(c, profile, true);
+    return generateSubscription(c, profile, true, logger);
 });
 
 profiles.get('/', async (c) => {
