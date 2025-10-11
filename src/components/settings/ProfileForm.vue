@@ -53,6 +53,7 @@ const defaultFormState = () => ({
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
   generation_mode: 'local' as 'local' | 'remote',
+  rules: [] as any[],
 });
 
 const formState = reactive(defaultFormState());
@@ -103,6 +104,8 @@ const fetchProfileData = async (id: string) => {
       
       formState.subscription_ids = profile.subscription_ids || [];
       formState.node_ids = profile.node_ids || [];
+      // Rules will be loaded by the ProfileRulesManager component itself
+      formState.rules = [];
       formState.node_prefix_settings = { ...defaultFormState().node_prefix_settings, ...profile.node_prefix_settings };
       const opts = profile.airport_subscription_options || {};
       if (opts.strategy) {
@@ -207,11 +210,19 @@ const handleSave = async () => {
         subconverter_config_id: formState.subconverter_config_id,
         generation_mode: formState.generation_mode,
       };
-      const payload = {
+      const contentPayloadStr = JSON.stringify(contentPayload);
+
+      let payload: any = {
         name: formState.name,
         alias: formState.alias || null,
-        content: JSON.stringify(contentPayload),
+        content: contentPayloadStr,
       };
+
+      // For new profiles, include the rules in the main payload.
+      if (!props.profileId) {
+        payload.rules = formState.rules.map(({ id, ...rest }) => rest); // Remove temporary frontend ID
+      }
+
       const response = props.profileId
         ? await api.put<any>(`/profiles/${props.profileId}`, payload)
         : await api.post<any>('/profiles', payload);
@@ -243,12 +254,9 @@ onMounted(async () => {
       const userDefaults = defaultsResponse.data.data;
       formState.subconverter_backend_id = userDefaults.default_backend_id || null;
       formState.subconverter_config_id = userDefaults.default_config_id || null;
-    } else {
-      const defaultBackend = allBackends.value.find(b => b.is_default);
-      const defaultConfig = allConfigs.value.find(c => c.is_default);
-      formState.subconverter_backend_id = defaultBackend ? defaultBackend.id : null;
-      formState.subconverter_config_id = defaultConfig ? defaultConfig.id : null;
     }
+    // Reset rules for new form
+    formState.rules = [];
   }
   loadingData.value = false;
 });
@@ -442,7 +450,7 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                   <template #feedback>设置后，所有手工添加的节点名称将变为 "前缀 - 节点名称"。当“使用分组名作为前缀”开启时，此项无效。</template>
                 </n-form-item>
                 <n-divider />
-                <profile-rules-manager v-if="props.profileId" :profile-id="props.profileId" />
+                <profile-rules-manager :profile-id="props.profileId" v-model:modelValue="formState.rules" />
               </n-tab-pane>
             </n-tabs>
           </n-card>
