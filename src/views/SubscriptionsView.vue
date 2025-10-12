@@ -929,16 +929,39 @@ const handleDeduplicateGroup = (groupId: string) => {
     positiveText: '确定删除',
     negativeText: '取消',
     onPositiveClick: async () => {
+      const chunkSize = 50;
+      const chunks = [];
+      for (let i = 0; i < idsToDelete.length; i += chunkSize) {
+        chunks.push(idsToDelete.slice(i, i + chunkSize));
+      }
+
       try {
-        const response = await api.post('/subscriptions/batch-delete', { ids: idsToDelete })
-        if (response.data.success) {
-          message.success(`成功删除了 ${duplicatesCount} 个重复订阅。`)
-          fetchSubscriptions()
-        } else {
-          message.error(response.data.message || '去重失败')
+        let successCount = 0;
+        let hasError = false;
+
+        for (const chunk of chunks) {
+          const response = await api.post('/subscriptions/batch-delete', { ids: chunk });
+          if (response.data.success) {
+            // Assuming the backend doesn't return the count for each chunk,
+            // we just proceed. The final message will use the total count.
+          } else {
+            hasError = true;
+            message.error(response.data.message || `一批订阅删除失败`);
+            // Stop on first error
+            break;
+          }
         }
+
+        if (!hasError) {
+          message.success(`成功删除了 ${duplicatesCount} 个重复订阅。`);
+        } else {
+          message.warning('部分重复订阅删除失败，请刷新后重试。');
+        }
+        
+        fetchSubscriptions();
+
       } catch (err) {
-        message.error('请求失败，请稍后重试')
+        message.error('请求失败，请稍后重试');
       }
     }
   })
