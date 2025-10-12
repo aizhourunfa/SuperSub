@@ -915,16 +915,24 @@ const handleDeduplicateGroup = (groupId: string) => {
     return
   }
 
+  const totalCount = subsInGroup.length
+  const duplicatesCount = idsToDelete.length
+  const remainingCount = totalCount - duplicatesCount
+
   dialog.warning({
     title: '确认去重',
-    content: `发现 ${idsToDelete.length} 个重复的订阅链接，确定要删除它们吗？`,
+    content: () => h('div', null, [
+      h('p', null, `分组内共有 ${totalCount} 条订阅。`),
+      h('p', null, `检测到 ${duplicatesCount} 条重复订阅。`),
+      h('p', null, `去重后将剩余 ${remainingCount} 条。`),
+    ]),
     positiveText: '确定删除',
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
         const response = await api.post('/subscriptions/batch-delete', { ids: idsToDelete })
         if (response.data.success) {
-          message.success(`成功删除了 ${idsToDelete.length} 个重复订阅。`)
+          message.success(`成功删除了 ${duplicatesCount} 个重复订阅。`)
           fetchSubscriptions()
         } else {
           message.error(response.data.message || '去重失败')
