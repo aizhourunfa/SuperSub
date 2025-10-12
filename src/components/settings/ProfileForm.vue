@@ -264,6 +264,28 @@ onMounted(async () => {
 const backendOptions = computed(() => allBackends.value.map(b => ({ label: b.name, value: b.id })));
 const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name, value: c.id })));
 
+const strategyHelpText = computed(() => {
+  const strategy = formState.airport_subscription_options.strategy;
+  const pollingMode = formState.airport_subscription_options.polling_mode;
+
+  const descriptions = {
+    strategy: {
+      all: '效果: 将所有选中的订阅链接合并为一个。\n简介: 这是最简单直接的方式，最终的配置文件会包含所有订阅的所有节点。',
+      polling: '效果: 每次只从您选择的订阅列表中拿出一个来使用。\n简介: 适用于在多个机场间轮流切换的场景，可作为负载均衡或故障转移的手段。',
+      random: '效果: 在每个订阅分组内随机选择一个订阅，然后将它们组合起来。\n简介: 确保每个分组都有一个出口，同时引入随机性。例如，从“香港”分组随机选一个，从“日本”分组随机选一个，最后合并成一个配置。'
+    },
+    polling_mode: {
+      hourly: '每小时自动使用列表中的下一个订阅。',
+      request: '每次获取配置文件时，自动使用下一个订阅。',
+      group_request: '效果: 在每个订阅分组内按顺序轮流使用订阅。\n简介: 类似“分组随机”，但它不是随机选择，而是在每个分组内部按顺序循环使用订阅。这为每个分组提供了可预测的、轮流的故障转移。'
+    }
+  };
+  
+  return {
+    strategy: descriptions.strategy[strategy] || '',
+    polling_mode: strategy === 'polling' ? (descriptions.polling_mode[pollingMode] || '') : ''
+  };
+});
 </script>
 
 <template>
@@ -354,6 +376,9 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                           ]"
                           style="width: 180px"
                         />
+                        <template #feedback>
+                          <div style="white-space: pre-wrap;">{{ strategyHelpText.strategy }}</div>
+                        </template>
                       </n-form-item>
 
                       <n-form-item v-if="formState.airport_subscription_options.strategy === 'polling'" label="轮询模式" label-placement="left" class="mb-0">
@@ -366,6 +391,9 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                           ]"
                           style="width: 150px"
                         />
+                        <template #feedback>
+                          <div style="white-space: pre-wrap;">{{ strategyHelpText.polling_mode }}</div>
+                        </template>
                       </n-form-item>
                       
                       <n-form-item v-if="formState.airport_subscription_options.strategy === 'polling' && formState.airport_subscription_options.polling_mode === 'group_request'" label="分组轮询阈值" label-placement="left" class="mb-0">
