@@ -631,7 +631,7 @@ onBeforeUnmount(() => {
             <span :style="{ color: group.is_enabled ? '' : '#999', marginRight: '8px' }">
               {{ group.name }} ({{ groupCounts[group.id] || 0 }})
             </span>
-            <n-button text class="group-actions-button">
+            <n-button v-if="activeTab === group.id" text class="group-actions-button">
               <n-icon :component="MoreIcon" />
             </n-button>
           </div>
@@ -847,12 +847,7 @@ onBeforeUnmount(() => {
 }
 
 .group-actions-button {
-  opacity: 0.5;
   transition: opacity 0.2s;
-}
-
-.group-tab-wrapper:hover .group-actions-button {
-  opacity: 1;
 }
 
 .drag-handle {
