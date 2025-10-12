@@ -721,6 +721,59 @@ const handleBatchDelete = () => {
   });
 };
 
+const handleClearCurrentGroup = () => {
+  const tab = activeTab.value;
+  let groupName = '';
+  let subCount = 0;
+
+  if (tab === 'all') {
+    groupName = '全部';
+    subCount = subscriptions.value.length;
+  } else if (tab === 'ungrouped') {
+    groupName = '未分组';
+    subCount = groupCounts.value.ungrouped;
+  } else {
+    const group = subscriptionGroupStore.groups.find(g => g.id === tab);
+    if (group) {
+      groupName = group.name;
+      subCount = groupCounts.value[tab] || 0;
+    }
+  }
+
+  if (subCount === 0) {
+    message.info(`“${groupName}”内没有可清除的订阅。`);
+    return;
+  }
+
+  dialog.warning({
+    title: '确认清除',
+    content: `确定要删除“${groupName}”分组下的全部 ${subCount} 个订阅吗？此操作不可恢复。`,
+    positiveText: '确定清除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        let response;
+        if (tab === 'all') {
+          response = await api.post('/subscriptions/clear-all');
+        } else {
+          const groupId = tab === 'ungrouped' ? null : tab;
+          response = await api.post('/subscriptions/clear-by-group', { groupId });
+        }
+
+        if (response.data.success) {
+          message.success(response.data.message || '清除成功');
+          fetchSubscriptions();
+          checkedRowKeys.value = [];
+        } else {
+          message.error(response.data.message || '清除失败');
+        }
+      } catch (err) {
+        message.error('请求失败，请稍后重试');
+      }
+    }
+  });
+};
+
 const handleMoveToGroup = async () => {
   if (checkedRowKeys.value.length === 0) {
     message.warning('请至少选择一个订阅');
@@ -1312,6 +1365,7 @@ onMounted(() => {
           <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
           <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
           <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
+          <n-button type="error" @click="handleClearCurrentGroup">一键清除</n-button>
         </n-space>
       </template>
     </n-page-header>

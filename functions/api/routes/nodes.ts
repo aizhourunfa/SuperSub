@@ -321,17 +321,23 @@ nodes.post('/batch-update-group', manualAuthMiddleware, async (c) => {
 nodes.post('/batch-delete', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { ids } = await c.req.json<{ ids: string[] }>();
+    const CHUNK_SIZE = 50;
 
     if (!ids || ids.length === 0) {
         return c.json({ success: false, message: 'No nodes selected for deletion' }, 400);
     }
 
-    const placeholders = ids.map(() => '?').join(',');
-    const stmt = c.env.DB.prepare(`DELETE FROM nodes WHERE id IN (${placeholders}) AND user_id = ?`).bind(...ids, user.id);
-    
     try {
-        await stmt.run();
-        return c.json({ success: true, message: 'Nodes deleted successfully.' });
+        let totalDeleted = 0;
+        for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+            const chunk = ids.slice(i, i + CHUNK_SIZE);
+            const placeholders = chunk.map(() => '?').join(',');
+            const query = `DELETE FROM nodes WHERE id IN (${placeholders}) AND user_id = ?`;
+            const bindings = [...chunk, user.id];
+            const { meta: { changes } } = await c.env.DB.prepare(query).bind(...bindings).run();
+            totalDeleted += changes || 0;
+        }
+        return c.json({ success: true, message: `Successfully deleted ${totalDeleted} nodes.` });
     } catch (error: any) {
         console.error('Failed to batch delete nodes:', error);
         return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
@@ -341,20 +347,38 @@ nodes.post('/batch-delete', manualAuthMiddleware, async (c) => {
 nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { action, groupId } = await c.req.json<{ action: string; groupId: string }>();
+    const CHUNK_SIZE = 50;
 
     if (action === 'clear') {
-        let stmt;
-        if (groupId === 'all') {
-            stmt = c.env.DB.prepare('DELETE FROM nodes WHERE user_id = ?').bind(user.id);
-        } else if (groupId === 'ungrouped') {
-            stmt = c.env.DB.prepare('DELETE FROM nodes WHERE user_id = ? AND group_id IS NULL').bind(user.id);
-        } else {
-            stmt = c.env.DB.prepare('DELETE FROM nodes WHERE user_id = ? AND group_id = ?').bind(user.id, groupId);
-        }
-
         try {
-            await stmt.run();
-            return c.json({ success: true, message: 'Nodes cleared successfully.' });
+            let idQuery;
+            if (groupId === 'all') {
+                idQuery = c.env.DB.prepare('SELECT id FROM nodes WHERE user_id = ?').bind(user.id);
+            } else if (groupId === 'ungrouped') {
+                idQuery = c.env.DB.prepare('SELECT id FROM nodes WHERE user_id = ? AND group_id IS NULL').bind(user.id);
+            } else {
+                idQuery = c.env.DB.prepare('SELECT id FROM nodes WHERE user_id = ? AND group_id = ?').bind(user.id, groupId);
+            }
+
+            const { results: nodesToClear } = await idQuery.all<{ id: string }>();
+
+            if (!nodesToClear || nodesToClear.length === 0) {
+                return c.json({ success: true, message: 'No nodes to clear.' });
+            }
+
+            const idsToDelete = nodesToClear.map(n => n.id);
+            let totalDeleted = 0;
+
+            for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+                const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+                const placeholders = chunk.map(() => '?').join(',');
+                const deleteQuery = `DELETE FROM nodes WHERE id IN (${placeholders}) AND user_id = ?`;
+                const bindings = [...chunk, user.id];
+                const { meta: { changes } } = await c.env.DB.prepare(deleteQuery).bind(...bindings).run();
+                totalDeleted += changes || 0;
+            }
+
+            return c.json({ success: true, message: `Successfully cleared ${totalDeleted} nodes.` });
         } catch (error: any) {
             console.error('Failed to clear nodes:', error);
             return c.json({ success: false, message: `Database error: ${error.message}` }, 500);

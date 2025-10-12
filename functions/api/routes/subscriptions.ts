@@ -678,6 +678,83 @@ subscriptions.post('/batch-delete', async (c) => {
     return c.json({ success: true, message: `Successfully deleted ${ids.length} subscriptions.` });
 });
 
+// Route to clear all subscriptions for the user
+subscriptions.post('/clear-all', async (c) => {
+    const user = c.get('jwtPayload');
+    const CHUNK_SIZE = 50;
+
+    try {
+        // First, get all subscription IDs for the user
+        const { results: subs } = await c.env.DB.prepare(
+            'SELECT id FROM subscriptions WHERE user_id = ?'
+        ).bind(user.id).all<{ id: string }>();
+
+        if (!subs || subs.length === 0) {
+            return c.json({ success: true, message: 'No subscriptions to clear.' });
+        }
+
+        const idsToDelete = subs.map(sub => sub.id);
+        let totalDeleted = 0;
+
+        // Process in chunks
+        for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+            const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+            const placeholders = chunk.map(() => '?').join(',');
+            const query = `DELETE FROM subscriptions WHERE user_id = ? AND id IN (${placeholders})`;
+            const bindings = [user.id, ...chunk];
+            const { meta: { changes } } = await c.env.DB.prepare(query).bind(...bindings).run();
+            totalDeleted += changes || 0;
+        }
+
+        return c.json({ success: true, message: `Successfully cleared ${totalDeleted} subscriptions.` });
+
+    } catch (error: any) {
+        console.error('Error clearing all subscriptions:', error);
+        return c.json({ success: false, message: 'Failed to clear subscriptions.' }, 500);
+    }
+});
+
+// Route to clear subscriptions by group ID
+subscriptions.post('/clear-by-group', async (c) => {
+    const user = c.get('jwtPayload');
+    const { groupId } = await c.req.json<{ groupId: string | null }>();
+    const CHUNK_SIZE = 50;
+
+    try {
+        let query;
+        if (groupId) {
+            query = c.env.DB.prepare('SELECT id FROM subscriptions WHERE user_id = ? AND group_id = ?').bind(user.id, groupId);
+        } else { // For 'ungrouped'
+            query = c.env.DB.prepare('SELECT id FROM subscriptions WHERE user_id = ? AND group_id IS NULL').bind(user.id);
+        }
+
+        const { results: subs } = await query.all<{ id: string }>();
+
+        if (!subs || subs.length === 0) {
+            return c.json({ success: true, message: 'No subscriptions to clear in this group.' });
+        }
+
+        const idsToDelete = subs.map(sub => sub.id);
+        let totalDeleted = 0;
+
+        // Process in chunks
+        for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+            const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+            const placeholders = chunk.map(() => '?').join(',');
+            const deleteQuery = `DELETE FROM subscriptions WHERE user_id = ? AND id IN (${placeholders})`;
+            const bindings = [user.id, ...chunk];
+            const { meta: { changes } } = await c.env.DB.prepare(deleteQuery).bind(...bindings).run();
+            totalDeleted += changes || 0;
+        }
+
+        return c.json({ success: true, message: `Successfully cleared ${totalDeleted} subscriptions from the group.` });
+
+    } catch (error: any) {
+        console.error(`Error clearing subscriptions for group ${groupId}:`, error);
+        return c.json({ success: false, message: 'Failed to clear subscriptions from the group.' }, 500);
+    }
+});
+
 
 subscriptions.post('/batch-update-group', async (c) => {
     const user = c.get('jwtPayload');
