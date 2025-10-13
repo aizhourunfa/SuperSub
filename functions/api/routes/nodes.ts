@@ -2,92 +2,7 @@ import { Hono } from 'hono';
 import { fetchWithTimeout } from '../utils/network';
 import type { Env } from '../utils/types';
 import { manualAuthMiddleware } from '../middleware/auth';
-import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
-
-// A simple Base64 encoder that works in both browser and Node.js environments
-const base64Encode = (str: string): string => {
-    try {
-        // For Node.js environments
-        if (typeof Buffer !== 'undefined') {
-            return Buffer.from(str, 'utf-8').toString('base64');
-        }
-        // For browser environments (fallback, though backend is Node.js)
-        if (typeof btoa !== 'undefined') {
-            return btoa(unescape(encodeURIComponent(str)));
-        }
-        return ''; // Fallback
-    } catch (e) {
-        console.error('Failed to encode to base64:', e);
-        return '';
-    }
-};
-
-export const regenerateLink = (node: ParsedNode): string => {
-    const protocol = node.protocol;
-    // Backend URL encoding is slightly different
-    const name = encodeURIComponent(node.name);
-
-    switch (protocol) {
-        case 'vmess':
-            // Ensure ps is set to the node name for regeneration
-            const vmessConfig = { ...(node.protocol_params || {}), ps: node.name };
-            // Remove remarks if it exists to avoid conflicts
-            delete vmessConfig.remarks;
-            return `vmess://${base64Encode(JSON.stringify(vmessConfig))}`;
-        
-        case 'ss':
-            if (!node.protocol_params?.method || !node.password) return node.link || '';
-            const credentials = `${node.protocol_params.method}:${node.password}`;
-            const encodedCredentials = base64Encode(credentials).replace(/=/g, '');
-            return `ss://${encodedCredentials}@${node.server}:${node.port}#${name}`;
-
-        case 'trojan':
-        case 'vless':
-            // Ensure password (for trojan) or uuid (for vless) is present
-            if (!node.password) return node.link || '';
-            // URL class is available in Cloudflare Workers
-            const url = new URL(`${protocol}://${node.password}@${node.server}:${node.port}`);
-            url.hash = name;
-            if (node.protocol_params) {
-                for (const key in node.protocol_params) {
-                    // password is part of userinfo, not search params
-                    if (key.toLowerCase() !== 'password' && key.toLowerCase() !== 'id') {
-                         url.searchParams.set(key, node.protocol_params[key]);
-                    }
-                }
-            }
-            return url.toString();
-
-        case 'hysteria2':
-            if (!node.password) return node.link || ''; // auth is stored in password field
-            const hy2Url = new URL(`hysteria2://${node.password}@${node.server}:${node.port}`);
-            hy2Url.hash = name;
-            if (node.protocol_params) {
-                for (const key in node.protocol_params) {
-                    if (key !== 'auth') { // Auth is already in the userinfo part
-                        hy2Url.searchParams.set(key, node.protocol_params[key]);
-                    }
-                }
-            }
-            return hy2Url.toString();
-        
-        case 'tuic':
-            if (!node.protocol_params?.uuid || !node.password) return node.link || '';
-            const tuicUrl = new URL(`tuic://${node.protocol_params.uuid}:${node.password}@${node.server}:${node.port}`);
-            tuicUrl.hash = name;
-            if (node.protocol_params) {
-                for (const key in node.protocol_params) {
-                    if (key !== 'uuid' && key !== 'password') {
-                        tuicUrl.searchParams.set(key, node.protocol_params[key]);
-                    }
-                }
-            }
-            return tuicUrl.toString();
-
-        default:
-            return node.link || ''; // Fallback to original link
-    }
-};
+import { parseNodeLinks, ParsedNode, regenerateLink } from '../../../src/utils/nodeParser';
 
 
 const nodes = new Hono<{ Bindings: Env }>();
@@ -402,13 +317,14 @@ nodes.put('/:id', manualAuthMiddleware, async (c) => {
     const body = await c.req.json<{ name: string; link: string }>();
     const now = new Date().toISOString();
 
-    const existingNode = await c.env.DB.prepare('SELECT link FROM nodes WHERE id = ? AND user_id = ?').bind(id, user.id).first<{ link: string }>();
+    const existingNode = await c.env.DB.prepare('SELECT link, name FROM nodes WHERE id = ? AND user_id = ?').bind(id, user.id).first<{ link: string, name: string }>();
 
     if (!existingNode) {
         return c.json({ success: false, message: 'Node not found' }, 404);
     }
 
-    if (existingNode.link !== body.link) {
+    // If link or name has changed, we need to re-parse and regenerate the link.
+    if (existingNode.link !== body.link || existingNode.name !== body.name) {
         const parsedNodes = parseNodeLinks(body.link);
         if (parsedNodes.length === 0) {
             return c.json({ success: false, message: 'Invalid node link provided' }, 400);
@@ -416,8 +332,12 @@ nodes.put('/:id', manualAuthMiddleware, async (c) => {
         if (parsedNodes.length > 1) {
             return c.json({ success: false, message: 'Editing with multiple node links is not supported' }, 400);
         }
+        
+        // The parsed node may have a different name, but we respect the name from the form.
         const parsedNode = parsedNodes[0];
-        // Also regenerate the link on edit to ensure consistency
+        parsedNode.name = body.name;
+
+        // Regenerate the link with the potentially new name to ensure the hash part is updated.
         const regeneratedLink = regenerateLink(parsedNode);
         
         await c.env.DB.prepare(
@@ -425,8 +345,8 @@ nodes.put('/:id', manualAuthMiddleware, async (c) => {
              SET name = ?, link = ?, protocol = ?, protocol_params = ?, server = ?, port = ?, type = ?, updated_at = ?
              WHERE id = ? AND user_id = ?`
         ).bind(
-            body.name,
-            regeneratedLink, // Use the regenerated link
+            body.name, // Use the name from the body
+            regeneratedLink, // Use the newly regenerated link
             parsedNode.protocol,
             JSON.stringify(parsedNode.protocol_params),
             parsedNode.server,
@@ -436,12 +356,9 @@ nodes.put('/:id', manualAuthMiddleware, async (c) => {
             id,
             user.id
         ).run();
-    } else {
-        await c.env.DB.prepare(
-            `UPDATE nodes SET name = ?, updated_at = ?
-             WHERE id = ? AND user_id = ?`
-        ).bind(body.name, now, id, user.id).run();
     }
+    // No need for an else block, if nothing changed, we do nothing.
+    // If only the name changed, the above block handles it correctly.
 
     return c.json({ success: true });
 });
