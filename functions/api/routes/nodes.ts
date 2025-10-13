@@ -298,9 +298,97 @@ nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
             console.error('Failed to clear nodes:', error);
             return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
         }
+    } else if (action === 'sort') {
+        try {
+            // 1. Get all relevant nodes with their statuses
+            let nodesQuery;
+            const baseQuery = `
+                SELECT n.id, ns.status, ns.latency
+                FROM nodes n
+                LEFT JOIN node_statuses ns ON n.id = ns.node_id AND n.user_id = ns.user_id
+                WHERE n.user_id = ?
+            `;
+
+            if (groupId === 'all') {
+                nodesQuery = c.env.DB.prepare(baseQuery).bind(user.id);
+            } else if (groupId === 'ungrouped') {
+                nodesQuery = c.env.DB.prepare(`${baseQuery} AND n.group_id IS NULL`).bind(user.id);
+            } else {
+                nodesQuery = c.env.DB.prepare(`${baseQuery} AND n.group_id = ?`).bind(user.id, groupId);
+            }
+
+            const { results: nodesToSort } = await nodesQuery.all<{ id: string; status: string | null; latency: number | null }>();
+
+            if (!nodesToSort || nodesToSort.length === 0) {
+                return c.json({ success: true, message: 'No nodes to sort.' });
+            }
+
+            // 2. Sort the nodes
+            nodesToSort.sort((a, b) => {
+                const statusOrder = { 'healthy': 1, 'testing': 2, 'unhealthy': 3 };
+                const aStatus = a.status || 'unhealthy';
+                const bStatus = b.status || 'unhealthy';
+                
+                // @ts-ignore
+                const aStatusOrder = statusOrder[aStatus] || 4;
+                // @ts-ignore
+                const bStatusOrder = statusOrder[bStatus] || 4;
+
+                if (aStatusOrder !== bStatusOrder) {
+                    return aStatusOrder - bStatusOrder;
+                }
+
+                const aLatency = a.latency ?? Infinity;
+                const bLatency = b.latency ?? Infinity;
+
+                return aLatency - bLatency;
+            });
+
+            // 3. Create batch update statements for sort_order
+            const updateStmts = nodesToSort.map((node, index) =>
+                c.env.DB.prepare('UPDATE nodes SET sort_order = ? WHERE id = ? AND user_id = ?')
+                  .bind(index, node.id, user.id)
+            );
+
+            // 4. Execute batch update
+            if (updateStmts.length > 0) {
+                await c.env.DB.batch(updateStmts);
+            }
+
+            return c.json({ success: true, message: `Successfully sorted ${nodesToSort.length} nodes.` });
+        } catch (error: any) {
+            console.error('Failed to sort nodes:', error);
+            return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+        }
+    } else {
+        return c.json({ success: false, message: 'Invalid action' }, 400);
+    }
+});
+
+nodes.post('/update-order', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { nodeIds } = await c.req.json<{ nodeIds: string[] }>();
+
+    if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+        return c.json({ success: false, message: 'Invalid node IDs provided' }, 400);
     }
 
-    return c.json({ success: false, message: 'Invalid action' }, 400);
+    try {
+        const stmts = nodeIds.map((id, index) => {
+            return c.env.DB.prepare(
+                'UPDATE nodes SET sort_order = ? WHERE id = ? AND user_id = ?'
+            ).bind(index, id, user.id);
+        });
+
+        if (stmts.length > 0) {
+            await c.env.DB.batch(stmts);
+        }
+
+        return c.json({ success: true, message: 'Node order updated successfully.' });
+    } catch (error: any) {
+        console.error('Failed to update node order:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
 });
 
 nodes.get('/:id', manualAuthMiddleware, async (c) => {
