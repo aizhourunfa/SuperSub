@@ -298,9 +298,7 @@ nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
             console.error('Failed to clear nodes:', error);
             return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
         }
-    }
-
-    if (action === 'sort') {
+    } else if (action === 'sort') {
         try {
             // 1. Get all relevant nodes with their statuses
             let nodesQuery;
@@ -362,9 +360,9 @@ nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
             console.error('Failed to sort nodes:', error);
             return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
         }
+    } else {
+        return c.json({ success: false, message: 'Invalid action' }, 400);
     }
-
-    return c.json({ success: false, message: 'Invalid action' }, 400);
 });
 
 nodes.post('/update-order', manualAuthMiddleware, async (c) => {
