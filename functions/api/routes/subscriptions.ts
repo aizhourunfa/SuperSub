@@ -103,7 +103,7 @@ export const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: s
         try {
             if (rule.type === 'filter_by_name_keyword' || rule.type === 'exclude_by_name_keyword') {
                 // These rules expect a simple string of keywords, separated by commas or newlines.
-                const keywords = rule.value.split(/[\n,]+/).map((k: string) => k.trim().toLowerCase()).filter(Boolean);
+                const keywords = rule.value.split(/[\n,|]+/).map((k: string) => k.trim().toLowerCase()).filter(Boolean);
                 if (keywords.length === 0) continue;
 
                 if (rule.type === 'filter_by_name_keyword') {
