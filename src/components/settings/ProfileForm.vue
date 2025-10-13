@@ -49,6 +49,7 @@ const defaultFormState = () => ({
     enable_subscription_prefix: false,
     manual_node_prefix: '',
     enable_group_name_prefix: false,
+    manual_nodes_first: false,
   },
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
@@ -467,6 +468,10 @@ const strategyHelpText = computed(() => {
                 <n-form-item label="使用分组名作为手工节点前缀">
                   <n-switch v-model:value="formState.node_prefix_settings.enable_group_name_prefix" />
                   <template #feedback>开启后，手工节点将使用其所属的分组名作为前缀。此选项优先于下方的自定义前缀。</template>
+                </n-form-item>
+                <n-form-item label="手工节点排序优先">
+                  <n-switch v-model:value="formState.node_prefix_settings.manual_nodes_first" />
+                  <template #feedback>开启后，在组合节点时，手工节点将排在机场订阅节点之前。</template>
                 </n-form-item>
                 <n-form-item label="手工节点自定义前缀">
                   <n-input
