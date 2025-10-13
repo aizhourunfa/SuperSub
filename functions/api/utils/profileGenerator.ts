@@ -125,7 +125,15 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                     const selfUrl = new URL(c.req.url);
                     const nodesUrl = `${selfUrl.origin}/api/public/nodes?content=${encodedContent}`;
                     logger.info('已将手动节点转换为一个临时的 base64 订阅链接', { url: nodesUrl });
-                    finalUrlParts.push(nodesUrl);
+                    
+                    const nodePrefixSettings = content.node_prefix_settings || {};
+                    if (nodePrefixSettings.manual_nodes_first) {
+                        finalUrlParts.unshift(nodesUrl);
+                        logger.info('排序规则: 手动节点优先，已置于列表开头。');
+                    } else {
+                        finalUrlParts.push(nodesUrl);
+                        logger.info('排序规则: 订阅节点优先，手动节点已添加至列表末尾。');
+                    }
                 }
                 
                 if (finalUrlParts.length > 0) {

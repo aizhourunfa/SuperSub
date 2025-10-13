@@ -374,7 +374,14 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             group_name: n.group_name,
             isManual: true,
         }));
-        allNodes.push(...parsedManualNodes);
+        const nodePrefixSettings = content.node_prefix_settings || {};
+        if (nodePrefixSettings.manual_nodes_first) {
+            allNodes.unshift(...parsedManualNodes);
+            logger.info('排序规则: 手动节点优先，已置于列表开头。');
+        } else {
+            allNodes.push(...parsedManualNodes);
+            logger.info('排序规则: 订阅节点优先，手动节点已添加至列表末尾。');
+        }
         logger.success(`成功合并 ${parsedManualNodes.length} 个手动节点。`);
     }
 
