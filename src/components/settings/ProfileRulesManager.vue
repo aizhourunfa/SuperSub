@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { h, watch } from 'vue';
 import { ref, onMounted, computed } from 'vue';
-import { NCard, NButton, NDataTable, NSpace, NSwitch, useMessage, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber } from 'naive-ui';
+import { NCard, NButton, NDataTable, NSpace, NSwitch, useMessage, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber, NAlert, NP, NUl, NLi, NText } from 'naive-ui';
 import type { DataTableColumns, FormInst, FormRules } from 'naive-ui';
 import { api } from '@/utils/api';
 
@@ -22,6 +22,66 @@ const currentRule = ref<any>(null);
 const editingIndex = ref(-1);
 
 const isLocalMode = computed(() => !props.profileId);
+
+interface RuleHintExample {
+  label: string;
+  value: string;
+  explanation?: string;
+}
+
+interface RuleHint {
+  title: string;
+  description: string;
+  format: string;
+  examples: RuleHintExample[];
+}
+
+const ruleHints: Record<string, RuleHint> = {
+  filter_by_name_keyword: {
+    title: '按名称关键字过滤',
+    description: '仅保留名称中包含指定关键字的节点。',
+    format: '输入一个或多个关键字，多个关键字之间用 | (竖线)、, (逗号) 或换行分隔。',
+    examples: [
+      { label: '单个关键字', value: '香港' },
+      { label: '多个关键字', value: '香港|日本' }
+    ]
+  },
+  filter_by_name_regex: {
+    title: '按名称正则表达式过滤',
+    description: '使用正则表达式匹配节点名称，只保留匹配成功的节点。',
+    format: '输入一个有效的正则表达式。',
+    examples: [
+      { label: '匹配开头', value: '^HK' },
+      { label: '匹配特定模式', value: '(香港|澳门)\\sIPLC' }
+    ]
+  },
+  exclude_by_name_keyword: {
+    title: '按名称关键字排除',
+    description: '从列表中移除名称中包含指定关键字的节点。',
+    format: '输入一个或多个关键字，多个关键字之间用 | (竖线)、, (逗号) 或换行分隔。',
+    examples: [
+      { label: '单个关键字', value: '过期' },
+      { label: '多个关键字', value: '测试|beta' }
+    ]
+  },
+  rename_by_regex: {
+    title: '按正则表达式重命名',
+    description: '根据正则表达式查找并替换节点名称。这是最强大的功能，可以用来批量修改、添加前后缀等。',
+    format: '格式为 `正则表达式===替换内容`。',
+    examples: [
+      { label: '简单替换', value: '^\\[V2\\]===[VIP]', explanation: '将所有节点名称开头的 `[V2]` 替换为 `[VIP]`。' },
+      { label: '添加前缀', value: '^(.*)===MyPrefix-$1', explanation: '给所有节点名称前加上 `MyPrefix-`。`(.*)` 匹配整个原始名称并将其放入第一个捕获组 `$1`。' },
+      { label: '提取并重组', value: '^香港\\sIPLC\\s专线\\s(\\d+)===HK-$1', explanation: '将 `香港 IPLC 专线 01` 简化为 `HK-01`。`(\\d+)` 捕获数字，然后在替换内容中通过 `$1` 使用它。' }
+    ]
+  }
+};
+
+const currentRuleHint = computed(() => {
+  if (currentRule.value && currentRule.value.type) {
+    return ruleHints[currentRule.value.type as keyof typeof ruleHints];
+  }
+  return null;
+});
 
 watch(() => props.modelValue, (newValue) => {
   if (isLocalMode.value) {
@@ -205,6 +265,19 @@ onMounted(() => {
       <n-form-item label="规则值" path="value">
         <n-input v-model:value="currentRule.value" type="textarea" :autosize="{ minRows: 3 }" />
       </n-form-item>
+
+      <n-alert v-if="currentRuleHint" :title="currentRuleHint.title" type="info" :bordered="false" style="margin-bottom: 20px;">
+        <n-p>{{ currentRuleHint.description }}</n-p>
+        <n-p><n-text strong>格式: </n-text>{{ currentRuleHint.format }}</n-p>
+        <n-text strong>示例:</n-text>
+        <n-ul>
+          <n-li v-for="(example, index) in currentRuleHint.examples" :key="index">
+            <n-text strong>{{ example.label }}: </n-text>
+            <n-text code>{{ example.value }}</n-text>
+            <n-p v-if="example.explanation" style="margin-left: 16px; margin-top: 4px; font-size: 12px;">{{ example.explanation }}</n-p>
+          </n-li>
+        </n-ul>
+      </n-alert>
       <n-form-item label="排序" path="sort_order">
         <n-input-number v-model:value="currentRule.sort_order" />
       </n-form-item>
