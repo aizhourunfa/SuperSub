@@ -21,26 +21,17 @@ const base64Decode = (str: string): string => {
             throw new Error('Illegal base64url string!');
     }
 
+    // Use TextDecoder for robust UTF-8 decoding, available in all modern JS environments (Browser, Node, CF Workers).
     try {
-        // Use atob for browser environments, which is faster.
-        // The decodeURIComponent trick handles UTF-8 characters correctly.
-        const decoded = atob(output);
-        return decodeURIComponent(
-            Array.prototype.map
-                .call(decoded, (c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-                .join('')
-        );
-    } catch (e) {
-        console.error('Failed to decode base64 string with atob:', str, e);
-        // Fallback to Buffer for Node.js environments or if atob fails.
-        try {
-            if (typeof Buffer !== 'undefined') {
-                return Buffer.from(output, 'base64').toString('utf-8');
-            }
-        } catch (bufferError) {
-            console.error('Buffer decoding also failed:', bufferError);
+        const binaryString = atob(output);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
         }
-        return ''; // Return empty string if all methods fail.
+        return new TextDecoder().decode(bytes);
+    } catch (e) {
+        console.error('Failed to decode base64 string:', str, e);
+        return '';
     }
 };
 
@@ -74,13 +65,19 @@ const parseVmess = (link: string): ParsedNode | null => {
     // Strategy 1: Try to parse decoded data as JSON
     try {
         const config = JSON.parse(decodedData);
+        // Standardize fields: some configs use 'server' and 'uuid' instead of 'add' and 'id'.
+        if (!config.add && config.server) config.add = config.server;
+        if (!config.id && config.uuid) config.id = config.uuid;
+
         if (config.add && config.port && config.id) {
             // Merge JSON config with URL query params, with query params taking precedence
             finalParams = { ...config, ...finalParams };
             
-            const name = finalParams.ps || finalParams.remarks || `${finalParams.add}:${finalParams.port}`;
+            const name = finalParams.ps || finalParams.remarks || finalParams.name || `${finalParams.add}:${finalParams.port}`;
             delete finalParams.ps;
             delete finalParams.remarks;
+            // Also delete the 'name' field from the params if it exists, as it's now the top-level name.
+            delete finalParams.name;
 
             return {
                 name,
