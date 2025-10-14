@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem, NInputNumber } from 'naive-ui'
-import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon, SettingsOutline } from '@vicons/ionicons5'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem, NInputNumber, NList, NListItem } from 'naive-ui'
+import draggable from 'vuedraggable'
+import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon, SettingsOutline, ReorderFourOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, FormInst, DropdownOption } from 'naive-ui'
 import { Subscription, Node, ApiResponse } from '@/types'
 import { api } from '@/utils/api'
@@ -55,6 +56,11 @@ const showDropdown = ref(false)
 const dropdownX = ref(0)
 const dropdownY = ref(0)
 const activeDropdownGroup = ref<import('@/stores/subscriptionGroups').SubscriptionGroup | null>(null)
+
+// For Sorting Groups
+const showSortModal = ref(false)
+const sortableGroups = ref<import('@/stores/subscriptionGroups').SubscriptionGroup[]>([])
+const sortLoading = ref(false)
 
 // For Export Group Modal
 const showExportModal = ref(false)
@@ -1390,6 +1396,25 @@ onMounted(() => {
     }
   }, { deep: true })
 })
+
+const openSortModal = () => {
+  sortableGroups.value = [...subscriptionGroupStore.groups]
+  showSortModal.value = true
+}
+
+const handleSortSave = async () => {
+  sortLoading.value = true
+  try {
+    const groupIds = sortableGroups.value.map(g => g.id)
+    await subscriptionGroupStore.updateGroupOrder(groupIds)
+    message.success('分组顺序已更新')
+    showSortModal.value = false
+  } catch (error: any) {
+    message.error(error.message || '更新分组顺序失败')
+  } finally {
+    sortLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -1406,6 +1431,7 @@ onMounted(() => {
           <n-button type="primary" @click="openModal(null)">新增订阅</n-button>
           <n-button type="info" @click="openImportModal">批量导入</n-button>
           <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
+          <n-button type="default" @click="openSortModal">调整顺序</n-button>
           <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
           <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
           <n-button type="error" ghost @click="handleClearAllFailed">清除失败项</n-button>
@@ -1887,6 +1913,38 @@ onMounted(() => {
         <n-space justify="end">
           <n-button @click="showBatchReplaceModal = false">取消</n-button>
           <n-button type="primary" @click="handleBatchReplace" :loading="batchReplaceData.loading">确认替换</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showSortModal"
+      preset="card"
+      title="调整分组顺序"
+      style="width: 500px;"
+      :mask-closable="false"
+    >
+      <p class="text-gray-500 mb-4">拖动下方的分组名称来调整它们的显示顺序。</p>
+      <n-list bordered>
+        <draggable
+          v-model="sortableGroups"
+          item-key="id"
+          handle=".drag-handle"
+        >
+          <template #item="{ element: group }">
+            <n-list-item>
+              <div class="flex items-center">
+                <n-icon class="drag-handle mr-2 cursor-move" :component="ReorderFourOutline" size="20" />
+                <span>{{ group.name }}</span>
+              </div>
+            </n-list-item>
+          </template>
+        </draggable>
+      </n-list>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showSortModal = false">取消</n-button>
+          <n-button type="primary" @click="handleSortSave" :loading="sortLoading">保存顺序</n-button>
         </n-space>
       </template>
     </n-modal>

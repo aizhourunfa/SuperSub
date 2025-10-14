@@ -76,7 +76,21 @@ export const useSubscriptionGroupStore = defineStore('subscriptionGroups', () =>
   
   async function updateGroupOrder(groupIds: string[]) {
     const api = useApi();
-    return await api.post('/subscription-groups/update-order', { groupIds });
+    try {
+      const response = await api.post('/subscription-groups/update-order', { groupIds });
+      if (response.success) {
+        // On success, re-fetch the groups to ensure the UI is updated correctly.
+        await fetchGroups();
+      } else {
+        // If the API call fails, throw an error to be caught by the component.
+        throw new Error(response.message || 'Failed to update group order on the server.');
+      }
+      return response;
+    } catch (error) {
+      // Re-throw the error to be handled by the calling component.
+      console.error('Error in updateGroupOrder:', error);
+      throw error;
+    }
   }
 
   return {
