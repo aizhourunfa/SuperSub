@@ -146,7 +146,7 @@ graph TD
         *   **根目录**: 留空
 
 4.  **配置兼容性标志 (重要)**:
-    *   项目依赖于 Node.js 的兼容性 API。您必须在 Pages 项目中启用此功能。
+    *   项目依赖于 Node.js 的兼容性 API，正如在 `wrangler.toml` 中通过 `nodejs_compat` 标志所声明的。您必须在 Pages 项目中启用此功能。
     *   导航到 **设置** > **函数** > **兼容性标志**。
     *   添加并启用 `nodejs_compat` 标志。
 
@@ -155,7 +155,7 @@ graph TD
     *   **D1 数据库绑定**:
         *   您需要先在 Cloudflare 仪表板的 **Workers & Pages > D1** 部分创建一个生产数据库。
         *   然后回到 Pages 设置页面，在 **D1 数据库绑定** 部分，点击 **添加绑定**。
-        *   **变量名称** 必须为 `DB`。
+        *   **变量名称** 必须为 `DB` (与 `wrangler.toml` 中的 `binding` 字段保持一致)。
         *   **D1 数据库** 选择您刚刚创建的生产数据库。
         *   **初始化与迁移生产数据库**:
             *   **重要**: Cloudflare 不会自动为您创建或更新数据库表结构。您需要手动执行此操作。
@@ -166,8 +166,7 @@ graph TD
             npx wrangler d1 execute [您的生产数据库名称] --file=./db/schema.sql
 
             # 2. 应用所有迁移
-            npx wrangler d1 execute [您的生产数据库名称] --file=./migrations/0001_update_ua_mappings.sql
-            npx wrangler d1 execute [您的生产数据库名称] --file=./migrations/0002_add_sub_info.sql
+            npx wrangler d1 execute [您的生产数据库名称] --file=./migrations/0001_add_profile_rules.sql
             # ... 如果有更多迁移文件，请继续在这里添加 ...
             ```
             *   **注意**: 请将 `[您的生产数据库名称]` 替换为您在 Cloudflare 上创建的真实数据库名称。
