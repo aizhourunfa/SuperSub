@@ -782,6 +782,55 @@ subscriptions.post('/clear-by-group', async (c) => {
     }
 });
 
+// Route to clear failed subscriptions, optionally by group
+subscriptions.post('/clear-failed', async (c) => {
+    const user = c.get('jwtPayload');
+    const { groupId } = await c.req.json<{ groupId?: string | null }>();
+    const CHUNK_SIZE = 50;
+
+    try {
+        let query;
+        let bindings: (string | number)[] = [user.id];
+
+        if (groupId === 'all' || groupId === undefined) {
+            // Clear all failed subscriptions
+            query = 'SELECT id FROM subscriptions WHERE user_id = ? AND error IS NOT NULL';
+        } else if (groupId === 'ungrouped' || groupId === null) {
+            // Clear ungrouped failed subscriptions
+            query = 'SELECT id FROM subscriptions WHERE user_id = ? AND group_id IS NULL AND error IS NOT NULL';
+        } else {
+            // Clear failed subscriptions in a specific group
+            query = 'SELECT id FROM subscriptions WHERE user_id = ? AND group_id = ? AND error IS NOT NULL';
+            bindings.push(groupId);
+        }
+
+        const { results: subs } = await c.env.DB.prepare(query).bind(...bindings).all<{ id: string }>();
+
+        if (!subs || subs.length === 0) {
+            return c.json({ success: true, message: '该分组内没有检测到失败的订阅。' });
+        }
+
+        const idsToDelete = subs.map(sub => sub.id);
+        let totalDeleted = 0;
+
+        // Process in chunks
+        for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+            const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+            const deletePlaceholders = chunk.map(() => '?').join(',');
+            const deleteQuery = `DELETE FROM subscriptions WHERE user_id = ? AND id IN (${deletePlaceholders})`;
+            const deleteBindings = [user.id, ...chunk];
+            const { meta: { changes } } = await c.env.DB.prepare(deleteQuery).bind(...deleteBindings).run();
+            totalDeleted += changes || 0;
+        }
+
+        return c.json({ success: true, message: `成功清除了 ${totalDeleted} 个失败的订阅。` });
+
+    } catch (error: any) {
+        console.error('Error clearing failed subscriptions:', error);
+        return c.json({ success: false, message: '清除失败的订阅时出错。' }, 500);
+    }
+});
+
 
 subscriptions.post('/batch-update-group', async (c) => {
     const user = c.get('jwtPayload');

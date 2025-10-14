@@ -774,6 +774,49 @@ const handleClearCurrentGroup = () => {
   });
 };
 
+const handleClearAllFailed = () => {
+  const tab = activeTab.value;
+  const failedSubs = filteredSubscriptions.value.filter(sub => sub.error);
+
+  let groupName = '';
+  if (tab === 'all') {
+    groupName = '全部';
+  } else if (tab === 'ungrouped') {
+    groupName = '未分组';
+  } else {
+    const group = subscriptionGroupStore.groups.find(g => g.id === tab);
+    if (group) {
+      groupName = group.name;
+    }
+  }
+
+  if (failedSubs.length === 0) {
+    message.info(`“${groupName}”分组内没有失败的订阅可清除。`);
+    return;
+  }
+
+  dialog.warning({
+    title: `确认清除“${groupName}”分组内的失败订阅`,
+    content: `检测到 ${failedSubs.length} 个失败的订阅。确定要全部删除吗？此操作不可恢复。`,
+    positiveText: '确定清除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const groupId = tab === 'all' ? 'all' : (tab === 'ungrouped' ? null : tab);
+        const response = await api.post('/subscriptions/clear-failed', { groupId });
+        if (response.data.success) {
+          message.success(response.data.message || `成功清除了 ${failedSubs.length} 个失败订阅`);
+          fetchSubscriptions();
+        } else {
+          message.error(response.data.message || '清除失败');
+        }
+      } catch (err) {
+        message.error('请求失败，请稍后重试');
+      }
+    }
+  });
+};
+
 const handleMoveToGroup = async () => {
   if (checkedRowKeys.value.length === 0) {
     message.warning('请至少选择一个订阅');
@@ -1365,6 +1408,7 @@ onMounted(() => {
           <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
           <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
           <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
+          <n-button type="error" ghost @click="handleClearAllFailed">清除失败项</n-button>
           <n-button type="error" @click="handleClearCurrentGroup">一键清除</n-button>
         </n-space>
       </template>
