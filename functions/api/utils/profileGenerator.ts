@@ -49,16 +49,24 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 if (content.subscription_ids && content.subscription_ids.length > 0) {
                     logger.info('开始根据策略选择订阅源...');
                     const strategyResult = await selectSourcesByStrategy(c, profile, isDryRun, logger);
-                    let { updatedPollingState, strategy } = strategyResult;
+                    const { strategy } = strategyResult;
+                    const updatedPollingState: { polling_index?: number; group_polling_indices?: Record<string, number> } = {};
                     logger.success(`订阅选择策略: ${strategy}`);
 
                     if (strategyResult.type === 'selection') {
                         subscriptionUrls.push(...strategyResult.selectedSources.map((s: any) => s.sub.url));
                         logger.info(`选择了 ${strategyResult.selectedSources.length} 个订阅源`, { urls: subscriptionUrls });
+                        if (strategyResult.updatedPollingState?.polling_index !== undefined) {
+                            updatedPollingState.polling_index = strategyResult.updatedPollingState.polling_index;
+                        }
                     } else if (strategyResult.type === 'candidates') {
                         logger.info('正在处理 "分组轮询" 策略 (远程模式)...');
                         const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
-                        const groupPromises = Array.from(strategyResult.candidateSets.entries()).map(async ([groupId, cs]) => {
+                        
+                        const sortedCandidates = Array.from(strategyResult.candidateSets.entries())
+                            .sort(([a], [b]) => a.localeCompare(b));
+
+                        for (const [groupId, cs] of sortedCandidates) {
                             const query = `
                                 SELECT url FROM subscriptions
                                 WHERE user_id = ? AND ${groupId === 'ungrouped' ? 'group_id IS NULL' : 'group_id = ?'}
@@ -77,17 +85,19 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                                 groupPollingState[groupId] = newIndex;
                             } else {
                                 logger.warn(`分组 "${groupId}" 在轮询中没有找到可用的订阅。`);
+                                // Preserve the index on failure
+                                if (groupPollingState[groupId] === undefined) {
+                                    groupPollingState[groupId] = cs.startIndex;
+                                }
                             }
-                        });
-
-                        await Promise.all(groupPromises);
+                        }
                         
                         if (Object.keys(groupPollingState).length > 0) {
-                            updatedPollingState = { ...updatedPollingState, group_polling_indices: groupPollingState };
+                            updatedPollingState.group_polling_indices = groupPollingState;
                         }
                     }
                     
-                    if (Object.keys(updatedPollingState).length > 0 && !isDryRun) {
+                    if (Object.keys(updatedPollingState).length > 0) {
                         let setClauses = [];
                         let bindings: (string | number | undefined)[] = [];
                         if (updatedPollingState.polling_index !== undefined) {
