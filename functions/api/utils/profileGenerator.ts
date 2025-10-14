@@ -1,9 +1,10 @@
 import { Buffer } from 'node:buffer';
 import type { Env } from './types';
 import { Context } from 'hono';
-import { generateProfileNodes, selectSourcesByStrategy, applyAllRules } from '../routes/profiles';
+import { generateProfileNodes, selectSourcesByStrategy, applyAllRules, CandidateSet } from '../routes/profiles';
 import { regenerateLink, parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
 import { parseSubscriptionContent, userAgents } from '../routes/subscriptions';
+import { fetchSubscriptionContent } from './network';
 import { Logger } from './logger';
 
 export const generateSubscription = async (c: any, profile: any, isDryRun: boolean = false, logger: Logger) => {
@@ -62,36 +63,39 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                     } else if (strategyResult.type === 'candidates') {
                         logger.info('正在处理 "分组轮询" 策略 (远程模式)...');
                         const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
-                        
-                        const sortedCandidates = Array.from(strategyResult.candidateSets.entries())
-                            .sort(([a], [b]) => a.localeCompare(b));
+                        const airportOptions = content.airport_subscription_options || {};
+                        const timeout = airportOptions.timeout || 10;
 
-                        for (const [groupId, cs] of sortedCandidates) {
-                            const query = `
-                                SELECT url FROM subscriptions
-                                WHERE user_id = ? AND ${groupId === 'ungrouped' ? 'group_id IS NULL' : 'group_id = ?'}
-                                ORDER BY id
-                                LIMIT 1 OFFSET ?
-                            `;
-                            const queryParams: any[] = [userId];
-                            if (groupId !== 'ungrouped') queryParams.push(groupId);
-                            queryParams.push(cs.startIndex);
-                            
-                            const result = await c.env.DB.prepare(query).bind(...queryParams).first();
-                            if (result) {
-                                logger.success(`分组 "${groupId}" 选择了订阅: ${result.url}`);
-                                subscriptionUrls.push(result.url);
-                                const newIndex = (cs.startIndex + 1) % cs.totalInGroup;
-                                groupPollingState[groupId] = newIndex;
-                            } else {
-                                logger.warn(`分组 "${groupId}" 在轮询中没有找到可用的订阅。`);
-                                // Preserve the index on failure
-                                if (groupPollingState[groupId] === undefined) {
-                                    groupPollingState[groupId] = cs.startIndex;
+                        const findAvailableSubInGroupForRemote = async (groupId: string, candidateSet: CandidateSet): Promise<string | null> => {
+                            logger.info(`(远程) 开始串行探测分组 "${groupId}"...`);
+                            for (const [index, sub] of candidateSet.candidates.entries()) {
+                                try {
+                                    const fetchedContent = await fetchSubscriptionContent(sub.url, timeout);
+                                    if (fetchedContent) {
+                                        logger.success(`(远程) 分组 "${groupId}" 的候选 "${sub.name}" 成功返回内容。`);
+                                        const newIndex = (candidateSet.startIndex + index + 1) % candidateSet.totalInGroup;
+                                        groupPollingState[groupId] = newIndex;
+                                        logger.info(`(远程) 分组 "${groupId}" 的轮询索引将更新为 ${newIndex}。`);
+                                        return sub.url;
+                                    } else {
+                                        logger.warn(`(远程) 分组 "${groupId}" 的候选 "${sub.name}" 返回内容为空。`);
+                                    }
+                                } catch (error) {
+                                    logger.error(`(远程) 分组 "${groupId}" 的候选 "${sub.name}" 请求失败。`, { error });
                                 }
                             }
-                        }
+                            logger.error(`(远程) 分组 "${groupId}" 的所有候选订阅均获取失败。`);
+                            return null;
+                        };
+
+                        // strategyResult.candidateSets is now an ordered array
+                        const groupPromises = strategyResult.candidateSets.map(([groupId, cs]) => findAvailableSubInGroupForRemote(groupId, cs));
                         
+                        const availableUrls = (await Promise.all(groupPromises)).filter((url): url is string => url !== null);
+                        
+                        subscriptionUrls.push(...availableUrls);
+                        logger.success(`所有分组探测完成，共获得 ${subscriptionUrls.length} 个可用订阅链接。`);
+
                         if (Object.keys(groupPollingState).length > 0) {
                             updatedPollingState.group_polling_indices = groupPollingState;
                         }

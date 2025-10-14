@@ -29,7 +29,7 @@ export type StrategyResult = {
 } & ({
   // For group_request, we return a map of candidate sets
   type: 'candidates';
-  candidateSets: Map<string, CandidateSet>;
+  candidateSets: [string, CandidateSet][]; // Use an array to preserve order
 } | {
   // For all other strategies, we return the final selected sources
   type: 'selection';
@@ -66,7 +66,15 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
         logger.info(`执行 "分组轮询" 策略，每组探测 ${pollingThreshold} 个候选。`);
 
-        // 1. Get group counts for all *selected* subscriptions, in chunks
+        // 1. Get all subscription groups in their specified order
+        const { results: sortedGroups } = await db.prepare(
+            'SELECT id FROM subscription_groups WHERE user_id = ? ORDER BY sort_order ASC'
+        ).bind(userId).all();
+
+        const orderedGroupIds = sortedGroups ? (sortedGroups as { id: string }[]).map(g => g.id) : [];
+        logger.info('已获取有序的分组列表。', { orderedGroupIds });
+
+        // 2. Get group counts for all *selected* subscriptions
         const groupCountsMap = new Map<string, number>();
         for (let i = 0; i < subIds.length; i += CHUNK_SIZE) {
             const chunk = subIds.slice(i, i + CHUNK_SIZE);
@@ -86,15 +94,32 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         }
         logger.info('已统计所有订阅的分组情况。', { groupCounts: Object.fromEntries(groupCountsMap) });
 
-        if (groupCountsMap.size === 0) {
-            logger.warn('未找到任何订阅分组。');
-            return { type: 'selection', selectedSources: [], strategy: 'polling (group_request)' };
+        // Add non-ordered groups to the end of the ordered list
+        const allGroupIdsInMap = Array.from(groupCountsMap.keys());
+        const ungroupedIndex = allGroupIdsInMap.indexOf('ungrouped');
+        if (ungroupedIndex > -1) {
+            allGroupIdsInMap.splice(ungroupedIndex, 1); // remove 'ungrouped' for now
         }
+        
+        for (const groupId of allGroupIdsInMap) {
+            if (!orderedGroupIds.includes(groupId)) {
+                orderedGroupIds.push(groupId);
+            }
+        }
+        // Always add 'ungrouped' to the very end if it exists
+        if (groupCountsMap.has('ungrouped')) {
+            orderedGroupIds.push('ungrouped');
+        }
+        
+        logger.info('最终处理的分组顺序:', { finalOrder: orderedGroupIds });
 
-        const candidateSets = new Map<string, CandidateSet>();
+        const candidateSets: [string, CandidateSet][] = [];
 
-        // 2. For each group, fetch a small "candidate set" using pagination
-        for (const [groupId, totalInGroup] of groupCountsMap.entries()) {
+        // 3. For each group in the final ordered list, fetch a "candidate set"
+        for (const groupId of orderedGroupIds) {
+            const totalInGroup = groupCountsMap.get(groupId);
+            if (!totalInGroup) continue;
+
             const startIndex = groupPollingState[groupId] || 0;
             const effectiveStartIndex = startIndex % totalInGroup;
             logger.info(`为分组 "${groupId}" 准备候选集...`, { totalInGroup, startIndex: effectiveStartIndex });
@@ -117,11 +142,11 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
             
             if (candidates && candidates.length > 0) {
                 logger.success(`已为分组 "${groupId}" 获取 ${candidates.length} 个候选订阅。`, { candidates: candidates.map((c: any) => c.name) });
-                candidateSets.set(groupId, {
+                candidateSets.push([groupId, {
                     candidates,
                     totalInGroup,
                     startIndex: effectiveStartIndex
-                });
+                }]);
             } else {
                 logger.warn(`为分组 "${groupId}" 获取候选订阅失败。`);
             }
@@ -244,26 +269,22 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             }
             logger.info(`开始并发探测每个分组的候选订阅，探测间隔: ${pollingInterval}ms`);
             
-            const findAvailableSubInGroup = async (groupId: string, candidateSet: CandidateSet) => {
+            const findAvailableSubInGroup = async (groupId: string, candidateSet: CandidateSet): Promise<(ParsedNode & { id: string; raw: string; subscriptionName?: string; })[]> => {
                 logger.info(`开始串行探测分组 "${groupId}"...`);
-                let found = false;
                 for (const [index, sub] of candidateSet.candidates.entries()) {
                     try {
-                        // No more polling interval needed as we are serial
                         const fetchedContent = await fetchSubscriptionContent(sub.url, timeout);
                         if (fetchedContent) {
                             logger.success(`分组 "${groupId}" 的候选 "${sub.name}" 成功返回内容。`);
-                            let nodes = parseSubscriptionContent(fetchedContent);
+                            const nodes = parseSubscriptionContent(fetchedContent);
                             logger.info(`解析 "${sub.name}" 成功，获得 ${nodes.length} 个节点。`);
-                            const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                            allNodes.push(...nodesWithSubName);
-
+                            
                             const newIndex = (candidateSet.startIndex + index + 1) % candidateSet.totalInGroup;
                             groupPollingState[groupId] = newIndex;
                             logger.info(`分组 "${groupId}" 的轮询索引将更新为 ${newIndex}。`);
                             
-                            found = true;
-                            break; // Exit the loop once a successful subscription is found
+                            // Return nodes with subscription name attached
+                            return nodes.map(node => ({ ...node, subscriptionName: sub.name }));
                         } else {
                             logger.warn(`分组 "${groupId}" 的候选 "${sub.name}" 返回内容为空。`);
                         }
@@ -271,16 +292,16 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         logger.error(`分组 "${groupId}" 的候选 "${sub.name}" 请求失败。`, { error });
                     }
                 }
-
-                if (!found) {
-                    logger.error(`分组 "${groupId}" 的所有候选订阅均获取失败。`);
-                }
+                logger.error(`分组 "${groupId}" 的所有候选订阅均获取失败。`);
+                return []; // Return empty array if no subscription in the group is available
             };
 
-            const groupPromises = Array.from(strategyResult.candidateSets.entries())
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([groupId, cs]) => findAvailableSubInGroup(groupId, cs));
-            await Promise.all(groupPromises);
+            // candidateSets is now an ordered array
+            const groupPromises = strategyResult.candidateSets.map(([groupId, cs]) => findAvailableSubInGroup(groupId, cs));
+            
+            const resultsFromGroups = await Promise.all(groupPromises);
+            allNodes = resultsFromGroups.flat();
+            logger.success(`所有分组探测完成，共获得 ${allNodes.length} 个节点。`);
             
             if (Object.keys(groupPollingState).length > 0) {
                 updatedPollingState.group_polling_indices = groupPollingState;

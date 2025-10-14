@@ -21,7 +21,7 @@ const formRef = ref<FormInst | null>(null);
 const saveLoading = ref(false);
 const loadingData = ref(false);
 
-const allGroupedSubscriptions = ref<Record<string, { id: string; name: string }[]>>({});
+const allGroupedSubscriptions = ref<{ group_name: string; subscriptions: { id: string; name: string }[] }[]>([]);
 const allManualNodes = ref<Record<string, { id: string; name: string }[]>>({});
 const allBackends = ref<any[]>([]);
 const allConfigs = ref<any[]>([]);
@@ -84,7 +84,7 @@ const fetchAllSources = async () => {
       api.get<any>('/assets?type=backend'),
       api.get<any>('/assets?type=config'),
     ]);
-    if (subsRes.data.success) allGroupedSubscriptions.value = subsRes.data.data || {};
+    if (subsRes.data.success) allGroupedSubscriptions.value = subsRes.data.data || [];
     if (nodesRes.data.success) allManualNodes.value = nodesRes.data.data || {};
     if (backendRes.data.success) allBackends.value = backendRes.data.data || [];
     if (configRes.data.success) allConfigs.value = configRes.data.data || [];
@@ -346,12 +346,12 @@ const strategyHelpText = computed(() => {
                   </template>
                   <n-scrollbar style="max-height: 300px;">
                     <n-collapse>
-                      <n-collapse-item v-for="(subs, groupName) in allGroupedSubscriptions" :key="groupName" :title="`${groupName} (${subs.length})`">
+                      <n-collapse-item v-for="group in allGroupedSubscriptions" :key="group.group_name" :title="`${group.group_name} (${group.subscriptions.length})`">
                         <template #header-extra>
                           <n-checkbox
-                            :checked="isSubscriptionGroupSelected(subs)"
-                            :indeterminate="isSubscriptionGroupIndeterminate(subs)"
-                            @update:checked="handleSubscriptionGroupSelectAll(subs, $event)"
+                            :checked="isSubscriptionGroupSelected(group.subscriptions)"
+                            :indeterminate="isSubscriptionGroupIndeterminate(group.subscriptions)"
+                            @update:checked="handleSubscriptionGroupSelectAll(group.subscriptions, $event)"
                             @click.stop
                           >
                             全选
@@ -359,7 +359,7 @@ const strategyHelpText = computed(() => {
                         </template>
                         <n-checkbox-group v-model:value="formState.subscription_ids">
                           <n-space vertical>
-                            <n-checkbox v-for="sub in subs.filter(s => s.name.toLowerCase().includes(subFilter.toLowerCase()))" :key="sub.id" :value="sub.id" :label="sub.name" />
+                            <n-checkbox v-for="sub in group.subscriptions.filter(s => s.name.toLowerCase().includes(subFilter.toLowerCase()))" :key="sub.id" :value="sub.id" :label="sub.name" />
                           </n-space>
                         </n-checkbox-group>
                       </n-collapse-item>
