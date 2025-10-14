@@ -695,14 +695,24 @@ subscriptions.post('/batch-delete', async (c) => {
         return c.json({ success: false, message: 'No subscription IDs provided' }, 400);
     }
 
-    const placeholders = ids.map(() => '?').join(',');
-    const query = `DELETE FROM subscriptions WHERE user_id = ? AND id IN (${placeholders})`;
-    
-    const bindings = [user.id, ...ids];
-    
-    await c.env.DB.prepare(query).bind(...bindings).run();
+    const CHUNK_SIZE = 50; // Set a reasonable chunk size to avoid SQL variable limits
+    let totalDeleted = 0;
 
-    return c.json({ success: true, message: `Successfully deleted ${ids.length} subscriptions.` });
+    try {
+        for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+            const chunk = ids.slice(i, i + CHUNK_SIZE);
+            const placeholders = chunk.map(() => '?').join(',');
+            const query = `DELETE FROM subscriptions WHERE user_id = ? AND id IN (${placeholders})`;
+            const bindings = [user.id, ...chunk];
+            const { meta } = await c.env.DB.prepare(query).bind(...bindings).run();
+            totalDeleted += meta.changes || 0;
+        }
+
+        return c.json({ success: true, message: `Successfully deleted ${totalDeleted} subscriptions.` });
+    } catch (error: any) {
+        console.error('Error during batch delete:', error);
+        return c.json({ success: false, message: 'An error occurred during batch deletion.' }, 500);
+    }
 });
 
 // Route to clear all subscriptions for the user
