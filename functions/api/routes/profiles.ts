@@ -26,10 +26,6 @@ export interface CandidateSet {
 // The result of the strategy selection
 export type StrategyResult = {
   strategy: string;
-  updatedPollingState: {
-    polling_index?: number;
-    group_polling_indices?: Record<string, number>;
-  };
 } & ({
   // For group_request, we return a map of candidate sets
   type: 'candidates';
@@ -38,6 +34,7 @@ export type StrategyResult = {
   // For all other strategies, we return the final selected sources
   type: 'selection';
   selectedSources: SelectedSource[];
+  updatedPollingState?: { polling_index?: number };
 });
 
 
@@ -47,8 +44,6 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
     const content = JSON.parse(profile.content || '{}');
     const airportOptions = content.airport_subscription_options || {};
     const subIds = content.subscription_ids || [];
-
-    const updatedPollingState: StrategyResult['updatedPollingState'] = {};
     
     let strategy = airportOptions.strategy;
     if (!strategy) {
@@ -61,7 +56,7 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
 
     if (subIds.length === 0) {
         logger.warn('此配置文件不包含任何订阅。');
-        return { type: 'selection', selectedSources: [], updatedPollingState, strategy: 'none' };
+        return { type: 'selection', selectedSources: [], strategy: 'none' };
     }
 
     // --- Group Polling Strategy (Optimized for large scale) ---
@@ -93,7 +88,7 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
 
         if (groupCountsMap.size === 0) {
             logger.warn('未找到任何订阅分组。');
-            return { type: 'selection', selectedSources: [], updatedPollingState, strategy: 'polling (group_request)' };
+            return { type: 'selection', selectedSources: [], strategy: 'polling (group_request)' };
         }
 
         const candidateSets = new Map<string, CandidateSet>();
@@ -135,7 +130,6 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
         return {
             type: 'candidates',
             candidateSets,
-            updatedPollingState, // This will be populated in the next step (generateProfileNodes)
             strategy: 'polling (group_request)'
         };
     }
@@ -154,6 +148,7 @@ export const selectSourcesByStrategy = async (c: any, profile: any, isDryRun: bo
     logger.info(`已获取全部 ${allSubs.length} 个相关订阅的详细信息。`);
 
     let selectedSources: SelectedSource[] = [];
+    const updatedPollingState: { polling_index?: number } = {};
 
     if (strategy === 'random') {
         const groupedSubs: Record<string, any[]> = {};
@@ -234,51 +229,57 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
         };
 
         const strategyResult = await selectSourcesByStrategy(mockContext, profile, isDryRun, logger);
-        const { updatedPollingState, strategy } = strategyResult;
+        const { strategy } = strategyResult;
+        let updatedPollingState: { polling_index?: number; group_polling_indices?: Record<string, number> } = {};
 
         if (strategy === 'polling (group_request)' && strategyResult.type === 'candidates' && content.generation_mode === 'local') {
             const pollingInterval = airportOptions.polling_interval || 200;
-            const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+            let groupPollingState;
+            try {
+                // profile.group_polling_indices might be null or an invalid JSON string
+                groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+            } catch (error) {
+                logger.error('解析 group_polling_indices 失败，将使用空状态。', { error, rawValue: profile.group_polling_indices });
+                groupPollingState = {}; // Fallback to an empty object on parsing failure
+            }
             logger.info(`开始并发探测每个分组的候选订阅，探测间隔: ${pollingInterval}ms`);
             
             const findAvailableSubInGroup = async (groupId: string, candidateSet: CandidateSet) => {
-                logger.info(`开始探测分组 "${groupId}"...`);
-                const promises = candidateSet.candidates.map((sub, index) => {
-                    return new Promise<any>(async (resolve, reject) => {
-                        try {
-                            await new Promise(res => setTimeout(res, index * pollingInterval));
-                            const fetchedContent = await fetchSubscriptionContent(sub.url, timeout);
-                            if (fetchedContent) {
-                                logger.success(`分组 "${groupId}" 的候选 "${sub.name}" 成功返回内容。`);
-                                resolve({ content: fetchedContent, sub, index });
-                            } else {
-                                logger.warn(`分组 "${groupId}" 的候选 "${sub.name}" 返回内容为空。`);
-                                reject(new Error(`Content empty for ${sub.url}`));
-                            }
-                        } catch (error) {
-                            logger.error(`分组 "${groupId}" 的候选 "${sub.name}" 请求失败。`, { error });
-                            reject(error);
+                logger.info(`开始串行探测分组 "${groupId}"...`);
+                let found = false;
+                for (const [index, sub] of candidateSet.candidates.entries()) {
+                    try {
+                        // No more polling interval needed as we are serial
+                        const fetchedContent = await fetchSubscriptionContent(sub.url, timeout);
+                        if (fetchedContent) {
+                            logger.success(`分组 "${groupId}" 的候选 "${sub.name}" 成功返回内容。`);
+                            let nodes = parseSubscriptionContent(fetchedContent);
+                            logger.info(`解析 "${sub.name}" 成功，获得 ${nodes.length} 个节点。`);
+                            const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                            allNodes.push(...nodesWithSubName);
+
+                            const newIndex = (candidateSet.startIndex + index + 1) % candidateSet.totalInGroup;
+                            groupPollingState[groupId] = newIndex;
+                            logger.info(`分组 "${groupId}" 的轮询索引将更新为 ${newIndex}。`);
+                            
+                            found = true;
+                            break; // Exit the loop once a successful subscription is found
+                        } else {
+                            logger.warn(`分组 "${groupId}" 的候选 "${sub.name}" 返回内容为空。`);
                         }
-                    });
-                });
+                    } catch (error) {
+                        logger.error(`分组 "${groupId}" 的候选 "${sub.name}" 请求失败。`, { error });
+                    }
+                }
 
-                try {
-                    const firstSuccess = await Promise.any(promises);
-                    let nodes = parseSubscriptionContent(firstSuccess.content);
-                    logger.info(`解析 "${firstSuccess.sub.name}" 成功，获得 ${nodes.length} 个节点。`);
-                    const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: firstSuccess.sub.name }));
-                    allNodes.push(...nodesWithSubName);
-
-                    const newIndex = (candidateSet.startIndex + firstSuccess.index + 1) % candidateSet.totalInGroup;
-                    groupPollingState[groupId] = newIndex;
-                    logger.info(`分组 "${groupId}" 的轮询索引将更新为 ${newIndex}。`);
-
-                } catch (error) {
+                if (!found) {
                     logger.error(`分组 "${groupId}" 的所有候选订阅均获取失败。`);
                 }
             };
 
-            const groupPromises = Array.from(strategyResult.candidateSets.entries()).map(([groupId, cs]) => findAvailableSubInGroup(groupId, cs));
+            const groupPromises = Array.from(strategyResult.candidateSets.entries())
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([groupId, cs]) => findAvailableSubInGroup(groupId, cs));
             await Promise.all(groupPromises);
             
             if (Object.keys(groupPollingState).length > 0) {
@@ -286,7 +287,10 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             }
 
         } else if (strategyResult.type === 'selection') {
-            const { selectedSources } = strategyResult;
+            const { selectedSources, updatedPollingState: regularPollingState } = strategyResult;
+            if (regularPollingState && regularPollingState.polling_index !== undefined) {
+                updatedPollingState = regularPollingState;
+            }
             logger.info(`准备获取 ${selectedSources.length} 个选定订阅的内容...`);
             const fetchPromises = selectedSources.map(async (source: any) => {
                 if (source.type === 'subscription') {
@@ -336,7 +340,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
             }
         }
         
-        if (Object.keys(updatedPollingState).length > 0 && !isDryRun) {
+        if (Object.keys(updatedPollingState).length > 0) {
             let setClauses = [];
             let bindings: (string | number | undefined)[] = [];
             if (updatedPollingState.polling_index !== undefined) {
