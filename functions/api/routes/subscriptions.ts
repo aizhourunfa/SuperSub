@@ -309,26 +309,46 @@ subscriptions.get('/for-select', async (c) => {
 subscriptions.get('/grouped', async (c) => {
     const user = c.get('jwtPayload');
     const { results: subscriptions } = await c.env.DB.prepare(`
-        SELECT s.id, s.name, sg.name as group_name
+        SELECT s.id, s.name, sg.name as group_name, sg.sort_order
         FROM subscriptions s
         LEFT JOIN subscription_groups sg ON s.group_id = sg.id
         WHERE s.user_id = ?
-        ORDER BY sg.name, s.name
-    `).bind(user.id).all<{ id: string; name: string; group_name: string | null }>();
+        ORDER BY sg.sort_order ASC, sg.name ASC, s.name ASC
+    `).bind(user.id).all<{ id: string; name: string; group_name: string | null; sort_order: number | null }>();
 
-    const groupedSubscriptions: Record<string, { id: string; name: string }[]> = {};
+    const grouped: Record<string, { id: string; name: string }[]> = {};
+    const groupOrder: Record<string, number> = {};
+    const ungroupedName = '未分组';
 
     if (subscriptions) {
         for (const sub of subscriptions) {
-            const groupName = sub.group_name || '未分组';
-            if (!groupedSubscriptions[groupName]) {
-                groupedSubscriptions[groupName] = [];
+            const groupName = sub.group_name || ungroupedName;
+            if (!grouped[groupName]) {
+                grouped[groupName] = [];
+                // Assign a large number for sort_order if it's null (ungrouped) to push it to the end.
+                groupOrder[groupName] = sub.sort_order ?? Infinity;
             }
-            groupedSubscriptions[groupName].push({ id: sub.id, name: sub.name });
+            grouped[groupName].push({ id: sub.id, name: sub.name });
         }
     }
 
-    return c.json({ success: true, data: groupedSubscriptions });
+    const sortedGroupedSubscriptions = Object.keys(grouped)
+        .sort((a, b) => {
+            const orderA = groupOrder[a];
+            const orderB = groupOrder[b];
+            if (orderA !== orderB) {
+                return orderA - orderB;
+            }
+            // Fallback to localeCompare if order is the same (e.g., multiple groups with no sort_order)
+            return a.localeCompare(b);
+        })
+        .map(groupName => ({
+            group_name: groupName,
+            subscriptions: grouped[groupName],
+        }));
+
+
+    return c.json({ success: true, data: sortedGroupedSubscriptions });
 });
 
 subscriptions.post('/', async (c) => {
