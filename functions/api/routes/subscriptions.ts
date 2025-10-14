@@ -388,9 +388,30 @@ const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: 
         const userInfoHeader = response.headers.get('subscription-userinfo');
         const rawContent = await response.text();
 
+        // Early check for JSON error messages from the provider
+        try {
+            const errorJson = JSON.parse(rawContent);
+            if (errorJson.message || errorJson.error) {
+                const errorMessage = `Provider error: ${errorJson.message || errorJson.error}`;
+                await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), errorMessage, sub.id).run();
+                const updatedSub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').bind(sub.id).first();
+                return { success: false, error: errorMessage, data: updatedSub };
+            }
+        } catch (e) {
+            // Not a JSON error, proceed as normal
+        }
+
         // 1. Parse content into structured nodes
         const nodes = parseSubscriptionContent(rawContent);
         const nodeCount = nodes.length;
+
+        // If no nodes were parsed and there's no user info header, it's likely an invalid or empty subscription.
+        if (nodeCount === 0 && !userInfoHeader) {
+            const error = 'Update failed: No nodes found in subscription content and no user info provided.';
+            await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, sub.id).run();
+            const updatedSub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').bind(sub.id).first();
+            return { success: false, error, data: updatedSub };
+        }
 
         // 2. Parse subscription details using the new robust parser
         const details = parseSubscriptionDetails(userInfoHeader, nodes);
