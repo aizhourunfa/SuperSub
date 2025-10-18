@@ -188,7 +188,7 @@ const parseHysteria2 = (link: string): ParsedNode | null => {
 };
 
 
-const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 'tuic'): ParsedNode | null => {
+const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 'tuic' | 'anytls'): ParsedNode | null => {
     if (!link.startsWith(`${protocol}://`)) return null;
 
     try {
@@ -205,7 +205,7 @@ const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 't
         protocol_params.server = protocol_params.server || url.hostname;
         protocol_params.port = protocol_params.port || Number(url.port);
 
-        let password = url.username;
+        let password = '';
         let uuid = '';
 
         if (protocol === 'ss') {
@@ -220,19 +220,25 @@ const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 't
                 return null;
             }
         } else if (protocol === 'tuic') {
-            const credentials = url.username.split(':');
-            uuid = credentials[0];
-            password = credentials[1] || '';
-            protocol_params.uuid = uuid;
+            uuid = url.username;
+            password = url.password;
+        } else if (protocol === 'anytls') {
+            uuid = url.username;
+            password = url.username; // For anytls, password/uuid is the same as the username.
+        } else {
+            // For protocols like vless, trojan
+            password = url.username;
         }
         
-        // Add password to protocol_params
+        // Populate protocol_params with the parsed credentials
+        protocol_params.uuid = uuid;
         protocol_params.password = password;
 
         // Final validation
         if (!protocol_params.server || !protocol_params.port) return null;
-        if (protocol !== 'ss' && !password) return null;
         if (protocol === 'tuic' && !uuid) return null;
+        if (protocol === 'anytls' && !uuid) return null;
+        if ((protocol === 'vless' || protocol === 'trojan') && !password) return null;
 
         return {
             name,
@@ -317,6 +323,8 @@ export const parseNodeLinks = (linksText: string): (ParsedNode & { id: string; r
       parsedNode = parseHysteria2(link);
     } else if (link.startsWith('tuic://')) {
       parsedNode = genericUrlParser(link, 'tuic');
+    } else if (link.startsWith('anytls://')) {
+      parsedNode = genericUrlParser(link, 'anytls');
     }
 
     if (parsedNode) {
@@ -392,8 +400,9 @@ export const regenerateLink = (node: ParsedNode): string => {
 
         case 'trojan':
         case 'vless':
+        case 'anytls':
             const params = node.protocol_params;
-            const authUser = params.password || node.password;
+            const authUser = params.uuid || params.password || node.password;
             const server = params.server || node.server;
             const port = params.port || node.port;
 
@@ -410,7 +419,7 @@ export const regenerateLink = (node: ParsedNode): string => {
             for (const key in params) {
                 // Avoid adding core info that is already in the URL's main part.
                 // Also avoid adding 'name' which might have been a query param originally.
-                if (key !== 'password' && key !== 'server' && key !== 'port' && key !== 'name') {
+                if (key !== 'password' && key !== 'server' && key !== 'port' && key !== 'name' && key !== 'uuid') {
                    url.searchParams.set(key, String(params[key]));
                 }
             }
@@ -427,11 +436,13 @@ export const regenerateLink = (node: ParsedNode): string => {
             return hy2Url.toString();
         
         case 'tuic':
-            const tuicUrl = new URL(`tuic://${node.protocol_params.uuid}:${node.password}@${node.server}:${node.port}`);
+            const tuicParams = node.protocol_params;
+            const tuicPassword = tuicParams.password || ''; // Can be empty
+            const tuicUrl = new URL(`tuic://${tuicParams.uuid}:${tuicPassword}@${node.server}:${node.port}`);
             tuicUrl.hash = name;
-            for (const key in node.protocol_params) {
-                if (key !== 'uuid') {
-                    tuicUrl.searchParams.set(key, node.protocol_params[key]);
+            for (const key in tuicParams) {
+                if (key !== 'uuid' && key !== 'password' && key !== 'server' && key !== 'port' && key !== 'name') {
+                    tuicUrl.searchParams.set(key, tuicParams[key]);
                 }
             }
             return tuicUrl.toString();

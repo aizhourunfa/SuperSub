@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, h, reactive, computed, watch, onBeforeUnmount } from 'vue';
-import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin, NTabs, NTabPane, NDropdown } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin, NTabs, NTabPane, NDropdown, NCode } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { debounce } from 'lodash-es';
 import type { DataTableColumns } from 'naive-ui';
@@ -254,6 +254,16 @@ const dropdownY = ref(0);
 const activeDropdownGroup = ref<NodeGroup | null>(null);
 
 const previewColumns: DataTableColumns<ParsedNode> = [
+    {
+        type: 'expand',
+        renderExpand: (rowData) => {
+            return h(NCode, {
+                code: JSON.stringify(rowData.protocol_params, null, 2),
+                language: 'json',
+                class: 'my-2'
+            });
+        }
+    },
   { title: '名称', key: 'name', ellipsis: { tooltip: true } },
   { title: '协议', key: 'protocol', width: 80 },
   { title: '服务器', key: 'server', ellipsis: { tooltip: true } },
