@@ -386,11 +386,24 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
     if (content.node_ids && content.node_ids.length > 0) {
         logger.info(`准备合并 ${content.node_ids.length} 个手动添加的节点...`);
-        const { results: manualNodes } = await env.DB.prepare(`
-            SELECT n.*, g.name as group_name FROM nodes n
-            LEFT JOIN node_groups g ON n.group_id = g.id
-            WHERE n.id IN (${content.node_ids.map(()=>'?').join(',')}) AND n.user_id = ?
-        `).bind(...content.node_ids, userId).all<any>();
+        
+        const CHUNK_SIZE = 50;
+        let manualNodes: any[] = [];
+        const nodeIds = content.node_ids;
+
+        for (let i = 0; i < nodeIds.length; i += CHUNK_SIZE) {
+            const chunk = nodeIds.slice(i, i + CHUNK_SIZE);
+            logger.info(`正在获取第 ${i + 1} 到 ${i + chunk.length} 个手动节点...`);
+            const { results: nodesInChunk } = await env.DB.prepare(`
+                SELECT n.*, g.name as group_name FROM nodes n
+                LEFT JOIN node_groups g ON n.group_id = g.id
+                WHERE n.id IN (${chunk.map(() => '?').join(',')}) AND n.user_id = ?
+            `).bind(...chunk, userId).all<any>();
+            
+            if (nodesInChunk) {
+                manualNodes = manualNodes.concat(nodesInChunk);
+            }
+        }
 
         const parsedManualNodes = manualNodes.map((n: any) => ({
             ...parseNodeLinks(n.link)[0],
