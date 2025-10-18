@@ -194,23 +194,23 @@ const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 't
     try {
         const url = new URL(link);
         const name = decodeURIComponent(url.hash.substring(1)) || url.searchParams.get('name') || url.hostname;
-        const server = url.hostname;
-        const port = Number(url.port);
-        let password = url.username;
-        let uuid = '';
-
-        if (!server || !port) return null;
-
+        
+        // Initialize protocol_params with all query parameters
         const protocol_params: Record<string, any> = {};
         for (const [key, value] of url.searchParams.entries()) {
             protocol_params[key] = value;
         }
 
+        // Add core URL parts to protocol_params, query params will have taken precedence if they existed
+        protocol_params.server = protocol_params.server || url.hostname;
+        protocol_params.port = protocol_params.port || Number(url.port);
+
+        let password = url.username;
+        let uuid = '';
+
         if (protocol === 'ss') {
-            // ss://<base64(method:pass)>@host:port#name
             try {
-                const decodedUsername = decodeURIComponent(url.username);
-                const decodedCredentials = base64Decode(decodedUsername);
+                const decodedCredentials = base64Decode(decodeURIComponent(url.username));
                 const [method, pass] = decodedCredentials.split(':');
                 if (!method || !pass) return null;
                 protocol_params.method = method;
@@ -220,32 +220,31 @@ const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 't
                 return null;
             }
         } else if (protocol === 'tuic') {
-            // tuic://<uuid>:<password>@host:port?sni=...
             const credentials = url.username.split(':');
             uuid = credentials[0];
             password = credentials[1] || '';
             protocol_params.uuid = uuid;
         }
         
-        if (!password && protocol !== 'ss') {
-            // For vless and trojan, password/uuid is in username
-            password = url.username;
-            if (!password) return null;
-        }
-        if (protocol === 'tuic' && !uuid) return null;
+        // Add password to protocol_params
+        protocol_params.password = password;
 
+        // Final validation
+        if (!protocol_params.server || !protocol_params.port) return null;
+        if (protocol !== 'ss' && !password) return null;
+        if (protocol === 'tuic' && !uuid) return null;
 
         return {
             name,
             link,
             protocol,
-            protocol_params,
-            // Legacy fields
-            server,
-            port,
+            protocol_params, // This now contains everything
+            // Legacy fields for backward compatibility or direct use
+            server: protocol_params.server,
+            port: Number(protocol_params.port),
             type: protocol,
-            password,
-            params: protocol_params,
+            password: protocol_params.password,
+            params: protocol_params, // 'params' is often used, so let's keep it consistent
         };
 
     } catch (error) {
@@ -253,6 +252,44 @@ const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 't
         return null;
     }
 }
+
+const parseSsr = (link: string): ParsedNode | null => {
+    if (!link.startsWith('ssr://')) return null;
+    try {
+        const decodedData = base64Decode(link.substring(6));
+        const parts = decodedData.split('/?');
+        const mainPart = parts[0];
+        const queryPart = parts.length > 1 ? parts[1] : '';
+        
+        const [server, port, protocol, method, obfs, password_base64] = mainPart.split(':');
+        
+        const password = base64Decode(password_base64);
+        const protocol_params: Record<string, any> = {
+            server, port: Number(port), protocol, method, obfs, password,
+            cipher: method, // Ensure 'cipher' key exists for consistency
+        };
+
+        let name = '';
+        if (queryPart) {
+            const queryParams = new URLSearchParams(queryPart);
+            for (const [key, value] of queryParams.entries()) {
+                const decodedValue = base64Decode(value);
+                switch (key) {
+                    case 'remarks': name = decodedValue; break;
+                    case 'group': protocol_params.group = decodedValue; break;
+                    case 'protoparam': protocol_params['protocol-param'] = decodedValue; break;
+                    case 'obfsparam': protocol_params['obfs-param'] = decodedValue; break;
+                    default: protocol_params[key] = decodedValue; break;
+                }
+            }
+        }
+        
+        name = name || `${server}:${port}`;
+        protocol_params.remarks = name;
+
+        return { name, link, protocol: 'ssr', protocol_params, server, port: Number(port), type: 'ssr', password, params: protocol_params };
+    } catch (error) { console.error('Failed to parse SSR link:', link, error); return null; }
+};
 
 
 export const parseNodeLinks = (linksText: string): (ParsedNode & { id: string; raw: string; })[] => {
@@ -270,6 +307,8 @@ export const parseNodeLinks = (linksText: string): (ParsedNode & { id: string; r
       parsedNode = parseVmess(link);
     } else if (link.startsWith('ss://')) {
       parsedNode = genericUrlParser(link, 'ss');
+    } else if (link.startsWith('ssr://')) {
+      parsedNode = parseSsr(link);
     } else if (link.startsWith('trojan://')) {
       parsedNode = genericUrlParser(link, 'trojan');
     } else if (link.startsWith('vless://')) {
@@ -319,18 +358,63 @@ export const regenerateLink = (node: ParsedNode): string => {
             return `vmess://${base64Encode(JSON.stringify(vmessConfig))}`;
         
         case 'ss':
-            const credentials = `${node.protocol_params.method}:${node.password}`;
+            // Be compatible with both 'method' and 'cipher' for encryption type
+            const method = node.protocol_params.method || node.protocol_params.cipher;
+            const password = node.protocol_params.password || node.password; // Fallback for safety
+            
+            if (!method || !password) {
+                console.error('Cannot regenerate SS link, missing method/cipher or password for', node);
+                return node.link || ''; // Fallback
+            }
+
+            const credentials = `${method}:${password}`;
             const encodedCredentials = base64Encode(credentials).replace(/=/g, ''); // Some clients don't like padding
             return `ss://${encodedCredentials}@${node.server}:${node.port}#${name}`;
 
+        case 'ssr':
+            const ssrParams = node.protocol_params;
+            const pass_b64 = base64Encode(ssrParams.password || '').replace(/=/g, '');
+            const method_val = ssrParams.method || ssrParams.cipher; // Be compatible
+            
+            const mainInfo = [ ssrParams.server, ssrParams.port, ssrParams.protocol, method_val, ssrParams.obfs, pass_b64 ].join(':');
+
+            const queryParts: string[] = [];
+            const remarks_b64 = base64Encode(node.name).replace(/=/g, '');
+            queryParts.push(`remarks=${remarks_b64}`);
+
+            if (ssrParams.group) queryParts.push(`group=${base64Encode(ssrParams.group).replace(/=/g, '')}`);
+            if (ssrParams['protocol-param']) queryParts.push(`protoparam=${base64Encode(ssrParams['protocol-param']).replace(/=/g, '')}`);
+            if (ssrParams['obfs-param']) queryParts.push(`obfsparam=${base64Encode(ssrParams['obfs-param']).replace(/=/g, '')}`);
+            
+            const finalString = `${mainInfo}/?${queryParts.join('&')}`;
+            const encodedLink = base64Encode(finalString).replace(/=/g, '');
+            return `ssr://${encodedLink}`;
+
         case 'trojan':
         case 'vless':
-            const trojanUrl = new URL(`${protocol}://${node.password}@${node.server}:${node.port}`);
-            trojanUrl.hash = name;
-            for (const key in node.protocol_params) {
-                trojanUrl.searchParams.set(key, node.protocol_params[key]);
+            const params = node.protocol_params;
+            const authUser = params.password || node.password;
+            const server = params.server || node.server;
+            const port = params.port || node.port;
+
+            if (!authUser || !server || !port) {
+                console.error('Cannot regenerate link, missing core info for', node);
+                return node.link || ''; // Fallback
             }
-            return trojanUrl.toString();
+
+            const url = new URL(`${protocol}://${authUser}@${server}:${port}`);
+            url.hash = name; // Already encoded name
+            
+            // 1:1 regeneration: Add all other params from protocol_params to the search query
+            // with their original keys and values.
+            for (const key in params) {
+                // Avoid adding core info that is already in the URL's main part.
+                // Also avoid adding 'name' which might have been a query param originally.
+                if (key !== 'password' && key !== 'server' && key !== 'port' && key !== 'name') {
+                   url.searchParams.set(key, String(params[key]));
+                }
+            }
+            return url.toString();
 
         case 'hysteria2':
             const hy2Url = new URL(`hysteria2://${node.password}@${node.server}:${node.port}`);
