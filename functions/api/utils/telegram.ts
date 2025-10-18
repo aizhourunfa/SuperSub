@@ -14,7 +14,7 @@ export async function sendTelegramMessage(env: Env, userId: string, message: str
     const chatId = settings['telegram_chat_id'];
 
     if (!botToken || !chatId) {
-        console.log('Telegram bot token or chat ID is not configured.');
+        // Telegram bot token or chat ID is not configured, do nothing.
         return;
     }
 
