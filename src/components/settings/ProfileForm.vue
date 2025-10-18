@@ -196,9 +196,12 @@ const handleSave = async () => {
     }
     saveLoading.value = true;
     try {
+      const allExistingNodeIds = new Set(Object.values(allManualNodes.value).flat().map(node => node.id));
+      const validNodeIds = formState.node_ids.filter(id => allExistingNodeIds.has(id));
+
       const contentPayload = {
         subscription_ids: formState.subscription_ids,
-        node_ids: formState.node_ids,
+        node_ids: validNodeIds,
         node_prefix_settings: formState.node_prefix_settings,
         airport_subscription_options: {
           strategy: formState.airport_subscription_options.strategy,
