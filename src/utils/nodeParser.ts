@@ -340,21 +340,29 @@ export const parseNodeLinks = (linksText: string): (ParsedNode & { id: string; r
 // A simple Base64 encoder that works in both browser and Node.js environments
 const base64Encode = (str: string): string => {
     try {
-        // For browser environments
-        if (typeof btoa !== 'undefined') {
-            return btoa(unescape(encodeURIComponent(str)));
-        }
-        // For Node.js environments
+        // This is the modern and correct way to handle Unicode strings for btoa,
+        // which works in both modern browsers and Cloudflare Workers.
+        const bytes = new TextEncoder().encode(str);
+        const binaryString = Array.from(bytes).map(byte => String.fromCharCode(byte)).join('');
+        return btoa(binaryString);
+    } catch (e) {
+        console.error('Failed to encode to base64:', e);
+        // Fallback for Node.js environments where btoa might not be available globally
+        // and TextEncoder might exist.
         if (typeof Buffer !== 'undefined') {
             return Buffer.from(str, 'utf-8').toString('base64');
         }
-        return ''; // Fallback
-    } catch (e) {
-        console.error('Failed to encode to base64:', e);
         return '';
     }
 };
 
+// Helper for SSR links, which require URL-safe Base64 encoding without padding.
+const base64EncodeUrlSafe = (str: string): string => {
+    return base64Encode(str)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+};
 
 export const regenerateLink = (node: ParsedNode): string => {
     const protocol = node.protocol;
@@ -381,21 +389,21 @@ export const regenerateLink = (node: ParsedNode): string => {
 
         case 'ssr':
             const ssrParams = node.protocol_params;
-            const pass_b64 = base64Encode(ssrParams.password || '').replace(/=/g, '');
+            const pass_b64 = base64EncodeUrlSafe(ssrParams.password || '');
             const method_val = ssrParams.method || ssrParams.cipher; // Be compatible
             
             const mainInfo = [ ssrParams.server, ssrParams.port, ssrParams.protocol, method_val, ssrParams.obfs, pass_b64 ].join(':');
 
             const queryParts: string[] = [];
-            const remarks_b64 = base64Encode(node.name).replace(/=/g, '');
+            const remarks_b64 = base64EncodeUrlSafe(node.name);
             queryParts.push(`remarks=${remarks_b64}`);
 
-            if (ssrParams.group) queryParts.push(`group=${base64Encode(ssrParams.group).replace(/=/g, '')}`);
-            if (ssrParams['protocol-param']) queryParts.push(`protoparam=${base64Encode(ssrParams['protocol-param']).replace(/=/g, '')}`);
-            if (ssrParams['obfs-param']) queryParts.push(`obfsparam=${base64Encode(ssrParams['obfs-param']).replace(/=/g, '')}`);
+            if (ssrParams.group) queryParts.push(`group=${base64EncodeUrlSafe(ssrParams.group)}`);
+            if (ssrParams['protocol-param']) queryParts.push(`protoparam=${base64EncodeUrlSafe(ssrParams['protocol-param'])}`);
+            if (ssrParams['obfs-param']) queryParts.push(`obfsparam=${base64EncodeUrlSafe(ssrParams['obfs-param'])}`);
             
             const finalString = `${mainInfo}/?${queryParts.join('&')}`;
-            const encodedLink = base64Encode(finalString).replace(/=/g, '');
+            const encodedLink = base64EncodeUrlSafe(finalString);
             return `ssr://${encodedLink}`;
 
         case 'trojan':

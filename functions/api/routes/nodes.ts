@@ -360,6 +360,70 @@ nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
             console.error('Failed to sort nodes:', error);
             return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
         }
+    } else if (action === 'deduplicate') {
+        try {
+            // 1. Get all relevant nodes
+            let nodesQuery;
+            const baseQuery = 'SELECT id, server, port, protocol, created_at FROM nodes WHERE user_id = ?';
+
+            if (groupId === 'all') {
+                nodesQuery = c.env.DB.prepare(baseQuery).bind(user.id);
+            } else if (groupId === 'ungrouped') {
+                nodesQuery = c.env.DB.prepare(`${baseQuery} AND group_id IS NULL`).bind(user.id);
+            } else {
+                nodesQuery = c.env.DB.prepare(`${baseQuery} AND group_id = ?`).bind(user.id, groupId);
+            }
+
+            const { results: nodesToDeduplicate } = await nodesQuery.all<{ id: string; server: string; port: number; protocol: string; created_at: string }>();
+
+            if (!nodesToDeduplicate || nodesToDeduplicate.length < 2) {
+                return c.json({ success: true, message: 'No duplicates found.' });
+            }
+
+            // 2. Identify duplicates in-memory
+            const uniqueNodes = new Map<string, { id: string; createdAt: Date }>();
+            const idsToDelete: string[] = [];
+
+            for (const node of nodesToDeduplicate) {
+                // A simple unique key. For more complex scenarios, you might need to hash protocol_params.
+                const uniqueKey = `${node.server}:${node.port}:${node.protocol}`;
+                const createdAt = new Date(node.created_at);
+
+                if (uniqueNodes.has(uniqueKey)) {
+                    const existingNode = uniqueNodes.get(uniqueKey)!;
+                    // Keep the newest node, delete the older one
+                    if (createdAt > existingNode.createdAt) {
+                        idsToDelete.push(existingNode.id);
+                        uniqueNodes.set(uniqueKey, { id: node.id, createdAt });
+                    } else {
+                        idsToDelete.push(node.id);
+                    }
+                } else {
+                    uniqueNodes.set(uniqueKey, { id: node.id, createdAt });
+                }
+            }
+
+            if (idsToDelete.length === 0) {
+                return c.json({ success: true, message: 'No duplicates found.' });
+            }
+
+            // 3. Batch delete the identified duplicates
+            let totalDeleted = 0;
+            for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+                const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+                const placeholders = chunk.map(() => '?').join(',');
+                const deleteQuery = `DELETE FROM nodes WHERE id IN (${placeholders}) AND user_id = ?`;
+                const bindings = [...chunk, user.id];
+                const { meta: { changes } } = await c.env.DB.prepare(deleteQuery).bind(...bindings).run();
+                totalDeleted += changes || 0;
+            }
+
+            return c.json({ success: true, message: `Successfully removed ${totalDeleted} duplicate nodes.` });
+
+        } catch (error: any) {
+            console.error('Failed to deduplicate nodes:', error);
+            return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+        }
     } else {
         return c.json({ success: false, message: 'Invalid action' }, 400);
     }
