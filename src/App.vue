@@ -5,6 +5,10 @@ import { useAuthStore } from './stores/auth'
 import { useThemeStore } from './stores/theme'
 import Layout from './components/Layout.vue'
 import { NConfigProvider, NMessageProvider, NDialogProvider, NLoadingBarProvider, darkTheme } from 'naive-ui'
+import hljs from 'highlight.js/lib/core'
+import yaml from 'highlight.js/lib/languages/yaml'
+
+hljs.registerLanguage('yaml', yaml)
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -20,7 +24,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <n-config-provider :theme="naiveTheme">
+  <n-config-provider :theme="naiveTheme" :hljs="hljs">
     <n-loading-bar-provider>
       <n-dialog-provider>
         <n-message-provider>

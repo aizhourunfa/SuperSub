@@ -73,9 +73,9 @@ const columns: DataTableColumns<Partial<Node>> = [
                 ghost: true,
                 type: 'primary',
                 onClick: () => {
-                   const link = regenerateLink(row as ParsedNode);
-                   if (link) {
-                       navigator.clipboard.writeText(link);
+                  const link = regenerateLink(row as ParsedNode);
+                  if (link) {
+                      navigator.clipboard.writeText(link);
                        message.success('已复制完整链接');
                    } else {
                        navigator.clipboard.writeText(row.raw || '');
