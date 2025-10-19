@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { h, computed } from 'vue'
+import { h, computed, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import type { Component } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
-import { NIcon, NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NSwitch, NSpace } from 'naive-ui'
+import { NIcon, NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NSwitch, NSpace, NDrawer, NButton } from 'naive-ui'
 import {
   HomeOutline as HomeIcon,
   CloudDownloadOutline as SubscriptionIcon,
@@ -15,7 +15,12 @@ import {
   SettingsOutline as SettingsIcon,
   LogOutOutline as LogoutIcon,
   PeopleOutline as PeopleIcon,
+  MenuOutline as MenuIcon,
 } from '@vicons/ionicons5'
+import { useIsMobile } from '@/composables/useMediaQuery'
+
+const isMobile = useIsMobile()
+const showDrawer = ref(false)
 
 function renderIcon(icon: Component) {
   return () => h(NIcon, null, { default: () => h(icon) })
@@ -98,13 +103,19 @@ const menuOptions = computed(() => {
 <template>
   <n-layout style="height: 100vh">
     <n-layout-header style="height: 64px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between;" bordered>
-      <div style="font-size: 20px; font-weight: bold;">SuperSub</div>
+      <n-space align="center">
+        <n-button v-if="isMobile" text @click="showDrawer = true">
+          <n-icon :component="MenuIcon" size="24" />
+        </n-button>
+        <div style="font-size: 20px; font-weight: bold;">SuperSub</div>
+      </n-space>
       <n-space align="center">
         <n-switch :value="themeStore.theme === 'dark'" @update:value="themeStore.toggleTheme" />
       </n-space>
     </n-layout-header>
     <n-layout has-sider>
       <n-layout-sider
+        v-if="!isMobile"
         bordered
         collapse-mode="width"
         :collapsed-width="64"
@@ -118,7 +129,13 @@ const menuOptions = computed(() => {
           :options="menuOptions"
         />
       </n-layout-sider>
-      <n-layout-content content-style="padding: 24px;">
+      <n-drawer v-model:show="showDrawer" :width="240" placement="left">
+        <n-menu
+          :options="menuOptions"
+          @update:value="showDrawer = false"
+        />
+      </n-drawer>
+      <n-layout-content :content-style="isMobile ? 'padding: 12px;' : 'padding: 24px;'">
         <RouterView />
       </n-layout-content>
     </n-layout>

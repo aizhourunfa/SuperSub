@@ -15,18 +15,44 @@
     </n-card>
 
     <n-data-table
+      v-if="!isMobile"
       :columns="columns"
       :data="users"
       :loading="loading"
       :pagination="pagination"
     />
+
+    <n-list v-else bordered class="mt-4">
+      <n-list-item v-for="user in users" :key="user.id">
+        <n-thing :title="user.username" :description="`角色: ${user.role}`" />
+        <template #suffix>
+          <n-dropdown
+            trigger="click"
+            :options="[
+              { label: user.role === 'admin' ? '降为普通用户' : '提升为管理员', key: 'update-role' },
+              { label: '删除', key: 'delete' },
+            ]"
+            @select="key => {
+              if (key === 'update-role') onUpdateRole(user);
+              if (key === 'delete') onDeleteUser(user);
+            }"
+          >
+            <n-button text>
+              <n-icon :component="MoreIcon" size="24" />
+            </n-button>
+          </n-dropdown>
+        </template>
+      </n-list-item>
+    </n-list>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue';
-import { NDataTable, NButton, useMessage, useDialog, NCard, NSwitch, NFlex } from 'naive-ui';
+import { NDataTable, NButton, useMessage, useDialog, NCard, NSwitch, NFlex, NList, NListItem, NThing, NDropdown, NIcon } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
+import { useIsMobile } from '@/composables/useMediaQuery';
+import { EllipsisVertical as MoreIcon } from '@vicons/ionicons5';
 import { useApi } from '@/composables/useApi';
 import type { User } from '@/types';
 import { useAuthStore } from '@/stores/auth';
@@ -34,6 +60,7 @@ import { useAuthStore } from '@/stores/auth';
 const api = useApi();
 const message = useMessage();
 const dialog = useDialog();
+const isMobile = useIsMobile();
 
 const loading = ref(true);
 const users = ref<User[]>([]);
@@ -78,6 +105,51 @@ const handleSettingsChange = async (value: boolean) => {
   } finally {
     settingsLoading.value = false;
   }
+};
+
+const handleUpdateRole = (user: User) => {
+  const newRole = user.role === 'admin' ? 'user' : 'admin';
+  dialog.warning({
+    title: '确认更改角色',
+    content: `确定要将用户 "${user.username}" 的角色更改为 "${newRole}" 吗？`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const response = await api.put(`/admin/users/${user.id}`, { role: newRole });
+        if (response.success) {
+          message.success('用户角色更新成功');
+          await fetchUsers();
+        } else {
+          message.error(response.message || '更新失败');
+        }
+      } catch (error: any) {
+        message.error(`请求失败: ${error.message}`);
+      }
+    }
+  });
+};
+
+const handleDeleteUser = (user: User) => {
+  dialog.error({
+    title: '确认删除用户',
+    content: `确定要永久删除用户 "${user.username}" 吗？此操作不可撤销。`,
+    positiveText: '确定删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const response = await api.delete(`/admin/users/${user.id}`);
+        if (response.success) {
+          message.success('用户删除成功');
+          await fetchUsers();
+        } else {
+          message.error(response.message || '删除失败');
+        }
+      } catch (error: any) {
+        message.error(`请求失败: ${error.message}`);
+      }
+    }
+  });
 };
 
 const createColumns = ({ onUpdateRole, onDeleteUser }: { onUpdateRole: (user: User) => void, onDeleteUser: (user: User) => void }): DataTableColumns<User> => {
@@ -142,52 +214,9 @@ const fetchUsers = async () => {
   }
 };
 
-const handleUpdateRole = (user: User) => {
-  const newRole = user.role === 'admin' ? 'user' : 'admin';
-  dialog.warning({
-    title: '确认更改角色',
-    content: `确定要将用户 "${user.username}" 的角色更改为 "${newRole}" 吗？`,
-    positiveText: '确定',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const response = await api.put(`/admin/users/${user.id}`, { role: newRole });
-        if (response.success) {
-          message.success('用户角色更新成功');
-          await fetchUsers();
-        } else {
-          message.error(response.message || '更新失败');
-        }
-      } catch (error: any) {
-        message.error(`请求失败: ${error.message}`);
-      }
-    }
-  });
-};
-
-const handleDeleteUser = (user: User) => {
-  dialog.error({
-    title: '确认删除用户',
-    content: `确定要永久删除用户 "${user.username}" 吗？此操作不可撤销。`,
-    positiveText: '确定删除',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const response = await api.delete(`/admin/users/${user.id}`);
-        if (response.success) {
-          message.success('用户删除成功');
-          await fetchUsers();
-        } else {
-          message.error(response.message || '删除失败');
-        }
-      } catch (error: any) {
-        message.error(`请求失败: ${error.message}`);
-      }
-    }
-  });
-};
-
 const columns = createColumns({ onUpdateRole: handleUpdateRole, onDeleteUser: handleDeleteUser });
+const onUpdateRole = handleUpdateRole;
+const onDeleteUser = handleDeleteUser;
 const pagination = { pageSize: 10 };
 
 onMounted(() => {

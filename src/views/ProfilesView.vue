@@ -2,9 +2,10 @@
 import { ref, onMounted, computed, h } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
-import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NSpin, NIcon, NTag, NStatistic, NCard, NGrid, NGi, NScrollbar, NLog, NSteps, NStep, NCode } from 'naive-ui';
-import type { DataTableColumns } from 'naive-ui';
-import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon, DocumentTextOutline as LogIcon } from '@vicons/ionicons5';
+import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NSpin, NIcon, NTag, NStatistic, NCard, NGrid, NGi, NScrollbar, NLog, NSteps, NStep, NCode, NList, NListItem, NThing, NDropdown } from 'naive-ui';
+import type { DataTableColumns, DropdownOption } from 'naive-ui';
+import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon, DocumentTextOutline as LogIcon, EllipsisVertical as MoreIcon } from '@vicons/ionicons5';
+import { useIsMobile } from '@/composables/useMediaQuery';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
 import { LogoutInProgressError } from '@/utils/errors';
@@ -16,6 +17,7 @@ import SubscriptionLogModal from '@/components/SubscriptionLogModal.vue';
 const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
+const isMobile = useIsMobile();
 
 const profiles = ref<Profile[]>([]);
 const loading = ref(true);
@@ -251,11 +253,39 @@ onMounted(() => {
       </template>
     </n-page-header>
 
-    <n-data-table :columns="columns" :data="profiles" :loading="loading" :pagination="{ pageSize: 10 }" :bordered="false" class="mt-4" />
+    <n-data-table v-if="!isMobile" :columns="columns" :data="profiles" :loading="loading" :pagination="{ pageSize: 10 }" :bordered="false" class="mt-4" />
 
+    <n-list v-else bordered class="mt-4">
+      <n-list-item v-for="profile in profiles" :key="profile.id">
+        <n-thing :title="profile.name" />
+        <template #suffix>
+          <n-dropdown
+            trigger="click"
+            :options="[
+              { label: '复制链接', key: 'copy' },
+              { label: '预览', key: 'preview' },
+              { label: '日志', key: 'logs' },
+              { label: '编辑', key: 'edit' },
+              { label: '删除', key: 'delete' },
+            ]"
+            @select="key => {
+              if (key === 'copy') handleCopyLink(profile);
+              if (key === 'preview') onPreview(profile);
+              if (key === 'logs') onLogs(profile);
+              if (key === 'edit') router.push({ name: 'edit-profile', params: { id: profile.id } });
+              if (key === 'delete') handleDelete(profile);
+            }"
+          >
+            <n-button text>
+              <n-icon :component="MoreIcon" size="24" />
+            </n-button>
+          </n-dropdown>
+        </template>
+      </n-list-item>
+    </n-list>
 
     <!-- Nodes Preview Modal -->
-    <n-modal v-model:show="showNodesPreviewModal" preset="card" :title="`节点预览 - ${currentProfileForPreview?.name}`" style="width: 1200px;" :mask-closable="true" :trap-focus="false">
+    <n-modal v-model:show="showNodesPreviewModal" preset="card" :title="`节点预览 - ${currentProfileForPreview?.name}`" :style="{ width: isMobile ? '95vw' : '1200px' }" :mask-closable="true" :trap-focus="false">
       <n-spin :show="loadingNodesPreview">
         <div v-if="nodesPreviewData">
           <n-grid :cols="1">
@@ -296,7 +326,7 @@ onMounted(() => {
     </n-modal>
 
     <!-- Logs Modal -->
-    <n-modal v-model:show="showLogsModal" preset="card" title="上帝视角日志" style="width: 900px; max-height: 80vh;" :mask-closable="true" :trap-focus="false">
+    <n-modal v-model:show="showLogsModal" preset="card" title="上帝视角日志" :style="{ width: isMobile ? '95vw' : '900px', maxHeight: '80vh' }" :mask-closable="true" :trap-focus="false">
       <n-scrollbar style="max-height: 70vh; padding-right: 16px;">
         <n-steps vertical>
           <template v-for="log in nodesPreviewData?.logs" :key="log.timestamp">

@@ -94,7 +94,7 @@ onMounted(async () => {
       </n-alert>
     </div>
 
-    <n-grid cols="2 s:3 m:4" responsive="screen" :x-gap="16" :y-gap="16" class="mt-4">
+    <n-grid cols="1 s:2 m:4" responsive="screen" :x-gap="16" :y-gap="16" class="mt-4">
       <n-gi>
         <n-card>
           <n-skeleton v-if="loading" text :repeat="2" />

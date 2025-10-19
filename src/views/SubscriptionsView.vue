@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem, NInputNumber, NList, NListItem } from 'naive-ui'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem, NInputNumber, NList, NListItem, NThing, NPagination } from 'naive-ui'
 import draggable from 'vuedraggable'
-import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon, SettingsOutline, ReorderFourOutline } from '@vicons/ionicons5'
+import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon, SettingsOutline, ReorderFourOutline, AddOutline, EllipsisHorizontal } from '@vicons/ionicons5'
 import type { DataTableColumns, FormInst, DropdownOption } from 'naive-ui'
+import { useIsMobile } from '@/composables/useMediaQuery'
 import { Subscription, Node, ApiResponse } from '@/types'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
@@ -16,6 +17,7 @@ import { format } from 'date-fns'
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const isMobile = useIsMobile()
 const subscriptionGroupStore = useSubscriptionGroupStore()
 const nodeGroupStore = useNodeGroupStore()
 
@@ -36,6 +38,21 @@ const importGroupId = ref<string | undefined>(undefined)
 
 // For batch actions
 const checkedRowKeys = ref<string[]>([])
+
+// For mobile pagination
+interface MobilePagination {
+  page: number;
+  pageSize: number;
+  itemCount: number;
+  pageCount: number;
+}
+
+const mobilePagination: MobilePagination = reactive({
+  page: 1,
+  pageSize: 10,
+  itemCount: 0,
+  pageCount: computed(() => Math.ceil(mobilePagination.itemCount / mobilePagination.pageSize)),
+});
 
 // For moving subscriptions to a group
 const showMoveToGroupModal = ref(false)
@@ -177,6 +194,17 @@ const filteredSubscriptions = computed(() => {
     return sub.group_id === activeTab.value
   })
 })
+
+const paginatedSubscriptions = computed(() => {
+  const start = (mobilePagination.page - 1) * mobilePagination.pageSize;
+  const end = start + mobilePagination.pageSize;
+  return filteredSubscriptions.value.slice(start, end);
+});
+
+watch(filteredSubscriptions, (value) => {
+  mobilePagination.itemCount = value.length;
+});
+
 
 const groupCounts = computed(() => {
   const counts: { all: number; ungrouped: number; [key: string]: number } = {
@@ -345,6 +373,14 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
   ]
 }
 
+const onPreviewNodes = (row: Subscription) => {
+    currentSubscriptionForPreview.value = row
+    showNodePreviewModal.value = true
+    nextTick(() => {
+        nodePreviewRef.value?.fetchPreview()
+    })
+}
+
 const openModal = (sub: Subscription | null = null) => {
   if (sub) {
     editingSubscription.value = { ...sub }
@@ -462,14 +498,6 @@ const handleUpdate = async (row: Subscription, silent = false, signal?: AbortSig
   }
 }
 
-
-const handlePreviewNodes = (row: Subscription) => {
-    currentSubscriptionForPreview.value = row
-    showNodePreviewModal.value = true
-    nextTick(() => {
-        nodePreviewRef.value?.fetchPreview()
-    })
-}
 
 const openImportModal = () => {
   importUrls.value = ''
@@ -1359,7 +1387,7 @@ const columns = createColumns({
     onEdit: openModal,
     onUpdate: handleUpdate,
     onDelete: handleDelete,
-    onPreviewNodes: handlePreviewNodes,
+    onPreviewNodes: onPreviewNodes,
     onManageRules: (sub) => onManageRules(sub, 'subscription'),
 })
 
@@ -1425,17 +1453,41 @@ const handleSortSave = async () => {
       </template>
       <template #extra>
         <n-space>
-          <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingIds.size > 0">
-            {{ checkedRowKeys.length > 0 ? `更新选中 (${checkedRowKeys.length})` : '更新全部' }}
+          <n-button type="primary" @click="openModal(null)">
+            <template #icon>
+              <n-icon :component="AddOutline" />
+            </template>
+            <template v-if="!isMobile">新增订阅</template>
           </n-button>
-          <n-button type="primary" @click="openModal(null)">新增订阅</n-button>
-          <n-button type="info" @click="openImportModal">批量导入</n-button>
-          <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
-          <n-button type="default" @click="openSortModal">调整顺序</n-button>
-          <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
-          <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
-          <n-button type="error" ghost @click="handleClearAllFailed">清除失败项</n-button>
-          <n-button type="error" @click="handleClearCurrentGroup">一键清除</n-button>
+          <n-dropdown
+            trigger="click"
+            :options="[
+              { label: '更新全部', key: 'update-all' },
+              { label: '批量导入', key: 'import' },
+              { label: '新增分组', key: 'add-group' },
+              { label: '调整顺序', key: 'sort' },
+              { label: '移动到分组', key: 'move-to-group', disabled: checkedRowKeys.length === 0 },
+              { label: '批量删除', key: 'batch-delete', disabled: checkedRowKeys.length === 0 },
+              { label: '清除失败项', key: 'clear-failed' },
+              { label: '一键清除', key: 'clear-current-group' },
+            ]"
+            @select="key => {
+              if (key === 'update-all') handleUpdateAll();
+              if (key === 'import') openImportModal();
+              if (key === 'add-group') showAddGroupModal = true;
+              if (key === 'sort') openSortModal();
+              if (key === 'move-to-group') showMoveToGroupModal = true;
+              if (key === 'batch-delete') handleBatchDelete();
+              if (key === 'clear-failed') handleClearAllFailed();
+              if (key === 'clear-current-group') handleClearCurrentGroup();
+            }"
+          >
+            <n-button>
+              <template #icon>
+                <n-icon :component="EllipsisHorizontal" />
+              </template>
+            </n-button>
+          </n-dropdown>
         </n-space>
       </template>
     </n-page-header>
@@ -1477,6 +1529,7 @@ const handleSortSave = async () => {
     />
 
     <n-data-table
+      v-if="!isMobile"
       :columns="columns"
       :data="filteredSubscriptions"
       :loading="loading"
@@ -1486,6 +1539,63 @@ const handleSortSave = async () => {
       v-model:checked-row-keys="checkedRowKeys"
       :row-key="(row: Subscription) => row.id"
       :scroll-x="1800"
+    />
+
+    <n-list v-else bordered class="mt-4">
+      <n-list-item v-for="sub in paginatedSubscriptions" :key="sub.id">
+        <n-thing>
+          <template #header>
+            <n-space justify="space-between">
+              <n-text strong>{{ sub.name }}</n-text>
+              <n-tag v-if="sub.error" type="error" size="small">失败</n-tag>
+              <n-tag v-else-if="sub.last_updated" type="success" size="small">成功</n-tag>
+              <n-tag v-else type="default" size="small">待更新</n-tag>
+            </n-space>
+          </template>
+          <template #description>
+            <n-space :size="4" class="mt-2">
+              <n-tag type="info" round size="small">节点: {{ sub.node_count || 0 }}</n-tag>
+              <n-tag v-if="sub.remaining_traffic !== null && sub.remaining_traffic !== undefined" :type="sub.remaining_traffic < 1024*1024*1024 ? 'error' : 'warning'" round size="small">
+                流量: {{ formatBytes(sub.remaining_traffic) }}
+              </n-tag>
+              <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" :type="sub.remaining_days < 3 ? 'error' : 'warning'" round size="small">
+                天数: {{ sub.remaining_days }} 天
+              </n-tag>
+            </n-space>
+          </template>
+        </n-thing>
+        <template #suffix>
+          <n-dropdown
+            trigger="click"
+            :options="[
+              { label: '预览节点', key: 'preview' },
+              { label: '规则', key: 'rules' },
+              { label: '编辑', key: 'edit' },
+              { label: '更新', key: 'update' },
+              { label: '删除', key: 'delete' },
+            ]"
+            @select="key => {
+              if (key === 'preview') onPreviewNodes(sub);
+              if (key === 'rules') onManageRules(sub, 'subscription');
+              if (key === 'edit') openModal(sub);
+              if (key === 'update') handleUpdate(sub);
+              if (key === 'delete') handleDelete(sub);
+            }"
+          >
+            <n-button text>
+              <n-icon :component="MoreIcon" size="24" />
+            </n-button>
+          </n-dropdown>
+        </template>
+      </n-list-item>
+    </n-list>
+
+    <n-pagination
+      v-if="isMobile && mobilePagination.pageCount > 1"
+      v-model:page="mobilePagination.page"
+      :page-count="mobilePagination.pageCount"
+      class="mt-4"
+      style="justify-content: center;"
     />
 
     <n-modal
@@ -1921,7 +2031,7 @@ const handleSortSave = async () => {
       v-model:show="showSortModal"
       preset="card"
       title="调整分组顺序"
-      style="width: 500px;"
+      :style="{ width: isMobile ? '90vw' : '500px' }"
       :mask-closable="false"
     >
       <p class="text-gray-500 mb-4">拖动下方的分组名称来调整它们的显示顺序。</p>

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, h, reactive, computed, watch, onBeforeUnmount } from 'vue';
-import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin, NTabs, NTabPane, NDropdown, NCode } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin, NTabs, NTabPane, NDropdown, NCode, NList, NListItem, NThing, NPagination } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { debounce } from 'lodash-es';
 import type { DataTableColumns } from 'naive-ui';
+import { useIsMobile } from '@/composables/useMediaQuery';
 import { Node } from '@/types';
 import { useAuthStore } from '@/stores/auth';
 import { useGroupStore, type NodeGroup } from '@/stores/groups';
@@ -18,6 +19,7 @@ const message = useMessage();
 const dialog = useDialog();
 const authStore = useAuthStore();
 const groupStore = useGroupStore();
+const isMobile = useIsMobile();
 const nodeStatusStore = useNodeStatusStore();
 const nodes = ref<Node[]>([]);
 const loading = ref(true);
@@ -28,6 +30,20 @@ const activeTab = ref('all');
 const isSorting = ref(false);
 const orderChanged = ref(false);
 const saveOrderLoading = ref(false);
+
+interface MobilePagination {
+  page: number;
+  pageSize: number;
+  itemCount: number;
+  pageCount: number;
+}
+
+const mobilePagination: MobilePagination = reactive({
+  page: 1,
+  pageSize: 15,
+  itemCount: 0,
+  pageCount: computed(() => Math.ceil(mobilePagination.itemCount / mobilePagination.pageSize)),
+});
 
 const handleBatchAction = (action: 'sort' | 'deduplicate' | 'clear') => {
   const groupName = activeTab.value === 'all'
@@ -82,6 +98,17 @@ const filteredNodes = computed(() => {
     if (!keyword) return true;
     return node.name.toLowerCase().includes(keyword);
   });
+});
+
+const paginatedNodes = computed(() => {
+  const start = (mobilePagination.page - 1) * mobilePagination.pageSize;
+  const end = start + mobilePagination.pageSize;
+  return filteredNodes.value.slice(start, end);
+});
+
+watch(filteredNodes, (value) => {
+  mobilePagination.itemCount = value.length;
+  mobilePagination.page = 1;
 });
 
 const groupCounts = computed(() => {
@@ -600,18 +627,40 @@ onBeforeUnmount(() => {
       </template>
       <template #extra>
         <n-space>
-          <n-button v-if="!isSorting" @click="isSorting = true">手动排序</n-button>
-          <n-button v-if="isSorting" type="success" @click="handleSaveOrder" :disabled="!orderChanged" :loading="saveOrderLoading">保存排序</n-button>
-          <n-button v-if="isSorting" @click="isSorting = false; orderChanged = false; fetchData();">取消</n-button>
-          <n-button v-if="!isSorting" @click="handleBatchAction('sort')">一键排序</n-button>
-          <n-button @click="handleBatchAction('deduplicate')">一键去重</n-button>
           <n-button type="primary" @click="openModal(null)">导入节点</n-button>
-          <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
-          <n-button type="error" @click="handleBatchAction('clear')">一键清空</n-button>
-          <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
-          <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
-          <n-button type="primary" ghost @click="testSelectedNodes" :disabled="checkedRowKeys.length === 0">检查选中</n-button>
-          <n-button type="primary" ghost @click="testAllNodes" :loading="checkingAll">检查当前分组</n-button>
+          <n-dropdown
+            trigger="click"
+            :options="[
+              { label: '手动排序', key: 'manual-sort', disabled: isSorting },
+              { label: '一键排序', key: 'auto-sort' },
+              { label: '一键去重', key: 'deduplicate' },
+              { label: '新增分组', key: 'add-group' },
+              { label: '一键清空', key: 'clear-all' },
+              { label: '移动到分组', key: 'move-to-group', disabled: checkedRowKeys.length === 0 },
+              { label: '批量删除', key: 'batch-delete', disabled: checkedRowKeys.length === 0 },
+              { label: '检查选中', key: 'test-selected', disabled: checkedRowKeys.length === 0 },
+              { label: '检查当前分组', key: 'test-current-group' },
+            ]"
+            @select="key => {
+              if (key === 'manual-sort') isSorting = true;
+              if (key === 'auto-sort') handleBatchAction('sort');
+              if (key === 'deduplicate') handleBatchAction('deduplicate');
+              if (key === 'add-group') showAddGroupModal = true;
+              if (key === 'clear-all') handleBatchAction('clear');
+              if (key === 'move-to-group') showMoveToGroupModal = true;
+              if (key === 'batch-delete') handleBatchDelete();
+              if (key === 'test-selected') testSelectedNodes();
+              if (key === 'test-current-group') testAllNodes();
+            }"
+          >
+            <n-button>
+              <template #icon>
+                <n-icon :component="MoreIcon" />
+              </template>
+            </n-button>
+          </n-dropdown>
+           <n-button v-if="isSorting" type="success" @click="handleSaveOrder" :disabled="!orderChanged" :loading="saveOrderLoading">保存排序</n-button>
+          <n-button v-if="isSorting" @click="isSorting = false; orderChanged = false; fetchData();">取消</n-button>
         </n-space>
       </template>
     </n-page-header>
@@ -661,7 +710,7 @@ onBeforeUnmount(() => {
     />
 
     <n-data-table
-      v-if="!isSorting"
+      v-if="!isSorting && !isMobile"
       :columns="columns"
       :data="filteredNodes"
       :row-key="(row: Node) => row.id"
@@ -670,6 +719,60 @@ onBeforeUnmount(() => {
       :pagination="{ pageSize: 15 }"
       :bordered="false"
       class="mt-4"
+    />
+
+    <n-list v-if="!isSorting && isMobile" bordered class="mt-4">
+      <n-list-item v-for="node in paginatedNodes" :key="node.id">
+        <n-thing>
+          <template #avatar>
+            <n-icon v-if="nodeStatusStore.getStatusByNodeId(node.id)?.status === 'healthy'" color="#63e2b7" size="20">●</n-icon>
+            <n-icon v-else-if="nodeStatusStore.getStatusByNodeId(node.id)?.status === 'unhealthy'" color="#e88080" size="20">●</n-icon>
+            <n-spin v-else-if="nodeStatusStore.getStatusByNodeId(node.id)?.status === 'testing'" size="small" />
+            <n-icon v-else color="#cccccc" size="20">●</n-icon>
+          </template>
+          <template #header>
+            {{ node.name }}
+          </template>
+          <template #description>
+            <n-space>
+              <n-tag v-if="nodeStatusStore.getStatusByNodeId(node.id)?.latency" size="small" round :type="nodeStatusStore.getStatusByNodeId(node.id)!.latency! < 200 ? 'success' : nodeStatusStore.getStatusByNodeId(node.id)!.latency! < 500 ? 'warning' : 'error'">
+                {{ nodeStatusStore.getStatusByNodeId(node.id)?.latency }}ms
+              </n-tag>
+               <n-tag size="small" round :color="getNaiveTagColor(node.protocol || node.type || 'N/A', 'protocol')">{{ (node.protocol || node.type || 'N/A').toUpperCase() }}</n-tag>
+            </n-space>
+          </template>
+        </n-thing>
+        <template #suffix>
+          <n-space>
+            <n-button circle quaternary size="small" @click="() => testNode(node)" :loading="nodeStatusStore.getStatusByNodeId(node.id)?.status === 'testing'">
+              <template #icon><n-icon :component="FlashIcon" /></template>
+            </n-button>
+            <n-dropdown
+              trigger="click"
+              :options="[
+                { label: '编辑', key: 'edit' },
+                { label: '删除', key: 'delete' },
+              ]"
+              @select="key => {
+                if (key === 'edit') handleEditNode(node);
+                if (key === 'delete') handleDeleteNode(node);
+              }"
+            >
+              <n-button text>
+                <n-icon :component="MoreIcon" size="24" />
+              </n-button>
+            </n-dropdown>
+          </n-space>
+        </template>
+      </n-list-item>
+    </n-list>
+
+    <n-pagination
+      v-if="!isSorting && isMobile && mobilePagination.pageCount > 1"
+      v-model:page="mobilePagination.page"
+      :page-count="mobilePagination.pageCount"
+      class="mt-4"
+      style="justify-content: center;"
     />
 
     <div v-if="isSorting" class="n-data-table mt-4" :class="{ 'n-data-table--loading': loading }">
@@ -716,7 +819,7 @@ onBeforeUnmount(() => {
       v-model:show="showModal"
       preset="card"
       :title="modalTitle"
-      style="width: 600px;"
+      :style="{ width: isMobile ? '90vw' : '600px' }"
       :mask-closable="false"
     >
       <n-form @submit.prevent="handleSave">
@@ -744,7 +847,7 @@ onBeforeUnmount(() => {
       v-model:show="showAddFromLinkModal"
       preset="card"
       title="批量导入节点"
-      style="width: 800px;"
+      :style="{ width: isMobile ? '95vw' : '800px' }"
       :mask-closable="false"
     >
       <n-form @submit.prevent="handleBatchImport">
@@ -791,7 +894,7 @@ onBeforeUnmount(() => {
       v-model:show="showAddGroupModal"
       preset="card"
       title="新增分组"
-      style="width: 400px;"
+      :style="{ width: isMobile ? '90vw' : '400px' }"
       :mask-closable="false"
     >
       <n-form @submit.prevent="handleSaveGroup">
@@ -809,7 +912,7 @@ onBeforeUnmount(() => {
       v-model:show="showEditGroupModal"
       preset="card"
       title="重命名分组"
-      style="width: 400px;"
+      :style="{ width: isMobile ? '90vw' : '400px' }"
       :mask-closable="false"
     >
       <n-form @submit.prevent="handleUpdateGroup">
@@ -829,7 +932,7 @@ onBeforeUnmount(() => {
       v-model:show="showMoveToGroupModal"
       preset="card"
       title="移动节点到分组"
-      style="width: 400px;"
+      :style="{ width: isMobile ? '90vw' : '400px' }"
       :mask-closable="false"
     >
       <n-form @submit.prevent="handleMoveToGroup">
