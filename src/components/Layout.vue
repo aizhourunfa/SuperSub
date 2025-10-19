@@ -118,7 +118,7 @@ const menuOptions = computed(() => {
           :options="menuOptions"
         />
       </n-layout-sider>
-      <n-layout-content content-style="padding: 24px; background-color: #f0f2f5;">
+      <n-layout-content content-style="padding: 24px;">
         <RouterView />
       </n-layout-content>
     </n-layout>
