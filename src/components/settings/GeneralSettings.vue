@@ -2,7 +2,7 @@
   <div class="p-4">
     <n-form ref="formRef" :model="formState" label-placement="top">
       <n-divider title-placement="left">Telegram 通知设置</n-divider>
-      <n-grid :cols="2" :x-gap="24">
+      <n-grid cols="1" md:cols="2" :x-gap="24">
         <n-form-item-gi label="Bot Token" path="telegram_bot_token">
           <n-input
             v-model:value="formState.telegram_bot_token"
@@ -33,16 +33,16 @@
     <n-card>
       <n-space vertical>
         <n-text>您的私人订阅令牌，用于构建订阅链接。</n-text>
-        <n-input-group>
-          <n-input v-model:value="subToken" placeholder="正在加载..." />
+        <div class="flex flex-wrap items-center gap-2">
+          <n-input class="flex-grow" v-model:value="subToken" placeholder="正在加载..." />
           <n-button @click="copyToken" type="primary" ghost>
             复制
           </n-button>
           <n-button @click="saveToken" type="primary" :loading="saveTokenLoading">
             保存
           </n-button>
-        </n-input-group>
-        <n-button @click="resetToken" type="error" ghost :loading="resetLoading">
+        </div>
+        <n-button @click="resetToken" type="error" ghost :loading="resetLoading" class="mt-2">
           重置令牌
         </n-button>
       </n-space>
@@ -51,7 +51,7 @@
 
   <n-divider title-placement="left">修改密码</n-divider>
   <n-form ref="passwordFormRef" :model="passwordFormState" :rules="passwordRules" label-placement="top">
-    <n-grid :cols="2" :x-gap="24">
+    <n-grid cols="1" md:cols="2" :x-gap="24">
       <n-form-item-gi label="新密码" path="password">
         <n-input
           v-model:value="passwordFormState.password"

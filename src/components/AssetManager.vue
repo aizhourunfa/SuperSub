@@ -6,14 +6,39 @@
     </n-space>
 
     <n-data-table
+      v-if="!isMobile"
       :columns="columns"
       :data="assets"
       :loading="loading"
       :row-key="row => row.id"
     />
 
-    <n-modal v-model:show="showModal" preset="card" style="width: 600px;" :title="modalTitle">
-      <n-form ref="formRef" :model="currentAsset" :rules="rules">
+    <n-list v-else bordered :show-divider="false">
+      <n-list-item v-for="asset in assets" :key="asset.id">
+        <template #prefix>
+          <n-button quaternary circle @click="() => handleSetDefault(asset.id)" :disabled="isDefault(asset)">
+            <template #icon>
+              <n-icon :component="isDefault(asset) ? StarIcon : StarOutlineIcon" :color="isDefault(asset) ? '#fdd835' : undefined" />
+            </template>
+          </n-button>
+        </template>
+        <n-thing :title="asset.name" :description="asset.url" />
+        <template #suffix>
+          <n-space>
+            <n-button size="small" @click="() => openModal(asset)">编辑</n-button>
+            <n-popconfirm @positive-click="() => handleDelete(asset.id)">
+              <template #trigger>
+                <n-button size="small" type="error" ghost>删除</n-button>
+              </template>
+              确定要删除这个资源吗？
+            </n-popconfirm>
+          </n-space>
+        </template>
+      </n-list-item>
+    </n-list>
+
+    <n-modal v-model:show="showModal" preset="card" :style="{ width: isMobile ? '90vw' : '600px' }" :title="modalTitle">
+      <n-form ref="formRef" :model="currentAsset" :rules="rules" label-placement="top">
         <n-form-item label="名称" path="name">
           <n-input v-model:value="currentAsset.name" placeholder="为此资源指定一个易于识别的名称" />
         </n-form-item>
@@ -31,9 +56,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, h } from 'vue';
 import {
-  NButton, NDataTable, NSpace, NModal, NForm, NFormItem, NInput, useMessage, NPopconfirm, NIcon, NTooltip
+  NButton, NDataTable, NSpace, NModal, NForm, NFormItem, NInput, useMessage, NPopconfirm, NIcon, NTooltip, NList, NListItem, NThing
 } from 'naive-ui';
 import { Star as StarIcon, StarOutline as StarOutlineIcon } from '@vicons/ionicons5';
+import { useIsMobile } from '@/composables/useMediaQuery';
 import type { DataTableColumns } from 'naive-ui';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
@@ -60,6 +86,7 @@ const emit = defineEmits(['assets-updated']);
 
 const authStore = useAuthStore();
 const message = useMessage();
+const isMobile = useIsMobile();
 const assets = ref<SubconverterAsset[]>([]);
 const userDefaults = ref<UserDefaults>({});
 const loading = ref(true);

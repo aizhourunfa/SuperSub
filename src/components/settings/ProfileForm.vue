@@ -2,6 +2,7 @@
 import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { useMessage, NButton, NSpace, NForm, NFormItem, NInput, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch, NInputNumber, NRadioGroup, NRadioButton } from 'naive-ui';
 import { CopyOutline as CopyIcon } from '@vicons/ionicons5';
+import { useIsMobile } from '@/composables/useMediaQuery';
 import type { FormInst } from 'naive-ui';
 import type { Profile, Subscription } from '@/types';
 import { api } from '@/utils/api';
@@ -16,6 +17,7 @@ const emit = defineEmits(['save-success']);
 
 const message = useMessage();
 const authStore = useAuthStore();
+const isMobile = useIsMobile();
 
 const formRef = ref<FormInst | null>(null);
 const saveLoading = ref(false);
@@ -294,10 +296,10 @@ const strategyHelpText = computed(() => {
 
 <template>
   <n-spin :show="loadingData">
-    <n-form ref="formRef" :model="formState" :rules="rules">
-      <n-grid :cols="5" :x-gap="24">
+    <n-form ref="formRef" :model="formState" :rules="rules" label-placement="top">
+      <n-grid cols="1" md:cols="5" :x-gap="24">
         <!-- Left Column -->
-        <n-gi :span="2">
+        <n-gi span="1" md:span="2">
           <n-space vertical size="large">
             <n-card title="核心定义">
               <n-form-item label="配置名称" path="name">
@@ -339,7 +341,7 @@ const strategyHelpText = computed(() => {
         </n-gi>
 
         <!-- Right Column -->
-        <n-gi :span="3">
+        <n-gi span="1" md:span="3">
           <n-card title="数据源与内容处理">
             <n-tabs type="line" animated>
               <n-tab-pane name="subscriptions" tab="机场订阅">
@@ -369,7 +371,7 @@ const strategyHelpText = computed(() => {
                     </n-collapse>
                   </n-scrollbar>
                   <template #footer>
-                    <n-space align="center" justify="space-between">
+                    <n-space :vertical="isMobile" align="center" justify="space-between">
                       <n-form-item label="订阅选择策略" label-placement="left" class="mb-0">
                         <n-select
                           v-model:value="formState.airport_subscription_options.strategy"
