@@ -87,4 +87,117 @@ admin.post('/system-settings', async (c) => {
     }
 });
 
+
+admin.get('/logs/profile/:profileId', async (c) => {
+    const { profileId } = c.req.param();
+    const { page = '1', limit = '10' } = c.req.query();
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    try {
+        // Core Metrics
+        const totalAccessPromise = c.env.DB.prepare('SELECT COUNT(*) as count FROM subscription_access_logs WHERE profile_id = ?').bind(profileId).first<{ count: number }>();
+        const uniqueIpsPromise = c.env.DB.prepare('SELECT COUNT(DISTINCT ip_address) as count FROM subscription_access_logs WHERE profile_id = ?').bind(profileId).first<{ count: number }>();
+        
+        // Trends (last 30 days)
+        const dailyTrendPromise = c.env.DB.prepare(`
+            SELECT strftime('%Y-%m-%d', accessed_at) as date, COUNT(*) as count
+            FROM subscription_access_logs
+            WHERE profile_id = ? AND accessed_at >= date('now', '-30 days')
+            GROUP BY date
+            ORDER BY date ASC
+        `).bind(profileId).all();
+
+        // Country Distribution
+        const countryDistPromise = c.env.DB.prepare(`
+            SELECT country, COUNT(*) as count
+            FROM subscription_access_logs
+            WHERE profile_id = ?
+            GROUP BY country
+            ORDER BY count DESC
+            LIMIT 10
+        `).bind(profileId).all();
+
+        // Detailed Logs (paginated)
+        const logsPromise = c.env.DB.prepare(
+            'SELECT ip_address, user_agent, country, city, accessed_at FROM subscription_access_logs WHERE profile_id = ? ORDER BY accessed_at DESC LIMIT ? OFFSET ?'
+        ).bind(profileId, limitNum, offset).all();
+        const totalLogsCountPromise = c.env.DB.prepare('SELECT COUNT(*) as count FROM subscription_access_logs WHERE profile_id = ?').bind(profileId).first<{ count: number }>();
+
+        const [
+            totalAccess,
+            uniqueIps,
+            dailyTrend,
+            countryDist,
+            logs,
+            totalLogsCount
+        ] = await Promise.all([
+            totalAccessPromise,
+            uniqueIpsPromise,
+            dailyTrendPromise,
+            countryDistPromise,
+            logsPromise,
+            totalLogsCountPromise
+        ]);
+
+        return c.json({
+            success: true,
+            data: {
+                metrics: {
+                    totalAccess: totalAccess?.count ?? 0,
+                    uniqueIps: uniqueIps?.count ?? 0,
+                },
+                trends: dailyTrend.results,
+                distribution: {
+                    countries: countryDist.results,
+                },
+                logs: {
+                    data: logs.results,
+                    total: totalLogsCount?.count ?? 0,
+                    page: pageNum,
+                    limit: limitNum,
+                }
+            }
+        });
+
+    } catch (error: any) {
+        console.error('Failed to get profile logs:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
+});
+
+admin.get('/logs/summary', async (c) => {
+    try {
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayISO = todayStart.toISOString();
+
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        sevenDaysAgo.setHours(0, 0, 0, 0);
+        const sevenDaysAgoISO = sevenDaysAgo.toISOString();
+
+        const todayAccessPromise = c.env.DB.prepare(
+            "SELECT COUNT(*) as count FROM subscription_access_logs WHERE accessed_at >= ?"
+        ).bind(todayISO).first<{ count: number }>();
+
+        const weeklyUniqueIpsPromise = c.env.DB.prepare(
+            "SELECT COUNT(DISTINCT ip_address) as count FROM subscription_access_logs WHERE accessed_at >= ?"
+        ).bind(sevenDaysAgoISO).first<{ count: number }>();
+
+        const [todayAccess, weeklyUniqueIps] = await Promise.all([todayAccessPromise, weeklyUniqueIpsPromise]);
+
+        return c.json({
+            success: true,
+            data: {
+                todayAccess: todayAccess?.count ?? 0,
+                weeklyUniqueIps: weeklyUniqueIps?.count ?? 0,
+            }
+        });
+    } catch (error: any) {
+        console.error('Failed to get logs summary:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
+});
 export default admin;
