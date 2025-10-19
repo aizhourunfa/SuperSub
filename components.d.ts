@@ -13,12 +13,13 @@ declare module 'vue' {
     ConversionSettings: typeof import('./src/components/settings/ConversionSettings.vue')['default']
     GeneralSettings: typeof import('./src/components/settings/GeneralSettings.vue')['default']
     Layout: typeof import('./src/components/Layout.vue')['default']
-    NSpin: typeof import('naive-ui')['NSpin']
+    NInput: typeof import('naive-ui')['NInput']
     NText: typeof import('naive-ui')['NText']
     ProfileForm: typeof import('./src/components/settings/ProfileForm.vue')['default']
     ProfileRulesManager: typeof import('./src/components/settings/ProfileRulesManager.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SubscriptionLogModal: typeof import('./src/components/SubscriptionLogModal.vue')['default']
     SubscriptionNodesPreview: typeof import('./src/components/SubscriptionNodesPreview.vue')['default']
   }
 }

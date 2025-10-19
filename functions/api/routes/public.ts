@@ -19,6 +19,25 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
     const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE (id = ? OR alias = ?) AND user_id = ?').bind(profile_alias, profile_alias, user.id).first<any>();
     if (!profile) return c.text('Profile not found', 404);
 
+    // --- Start of Access Logging ---
+    const logAccess = async () => {
+        try {
+            const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
+            const user_agent = c.req.header('User-Agent') || 'N/A';
+            const cf = (c.req.raw as any).cf;
+            const country = cf?.country || 'N/A';
+            const city = cf?.city || 'N/A';
+
+            await c.env.DB.prepare(
+                'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
+            ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
+        } catch (e) {
+            console.error("Failed to log subscription access:", e);
+        }
+    };
+    c.executionCtx.waitUntil(logAccess());
+    // --- End of Access Logging ---
+
     // Send Telegram notification in the background
     c.executionCtx.waitUntil(sendTelegramMessage(c.env, user.id, "Subscription accessed")); // Simplified message for now
 

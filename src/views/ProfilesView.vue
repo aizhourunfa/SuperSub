@@ -11,6 +11,7 @@ import { LogoutInProgressError } from '@/utils/errors';
 import type { ApiResponse, Profile, Subscription, Node, LogEntry, LogLevel } from '@/types';
 import { regenerateLink, type ParsedNode } from '@/utils/nodeParser';
 import { getNaiveTagColor } from '@/utils/colors';
+import SubscriptionLogModal from '@/components/SubscriptionLogModal.vue';
 
 const router = useRouter();
 const message = useMessage();
@@ -36,6 +37,10 @@ const nodesPreviewData = ref<{
   mode: 'local' | 'remote';
   logs: LogEntry[];
 } | null>(null);
+
+// For Subscription Logs Modal
+const showSubLogsModal = ref(false);
+const currentProfileForLogs = ref<Profile | null>(null);
 
 const getStepStatus = (level: LogLevel) => {
   switch (level) {
@@ -99,10 +104,12 @@ const previewNodeColumns: DataTableColumns<Partial<Node>> = [
 ];
 
 
-const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
+const createColumns = ({ onCopy, onPreview, onLogs, onEdit, onDelete }: {
     onCopy: (row: Profile) => void,
     onPreview: (row: Profile) => void,
-    onEdit: (row: Profile) => void,
+    onLogs: (row: Profile) => void,
+    onEdit: (row
+: Profile) => void,
     onDelete: (row: Profile) => void,
 }): DataTableColumns<Profile> => {
   return [
@@ -121,13 +128,14 @@ const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
     {
       title: '操作',
       key: 'actions',
-      width: 200,
+      width: 240,
       render(row) {
         return h(NSpace, null, {
           default: () => [
             h(NButton, { size: 'small', circle: true, title: '复制链接', onClick: () => onCopy(row) }, { icon: () => h(NIcon, null, { default: () => h(CopyIcon) }) }),
             h(NButton, { size: 'small', circle: true, title: '预览', onClick: () => onPreview(row) }, { icon: () => h(NIcon, null, { default: () => h(PreviewIcon) }) }),
-            h(NButton, { size: 'small', circle: true, type: 'primary', title: '编辑', onClick: () => router.push({ name: 'edit-profile', params: { id: row.id } }) }, { icon: () => h(NIcon, null, { default: () => h(EditIcon) }) }),
+            h(NButton, { size: 'small', circle: true, title: '日志', onClick: () => onLogs(row) }, { icon: () => h(NIcon, null, { default: () => h(LogIcon) }) }),
+            h(NButton, { size: 'small', circle: true, type: 'primary', title: '编辑', onClick: () => onEdit(row) }, { icon: () => h(NIcon, null, { default: () => h(EditIcon) }) }),
             h(NButton, { size: 'small', circle: true, type: 'error', title: '删除', onClick: () => onDelete(row) }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) }),
           ]
         });
@@ -213,7 +221,18 @@ const onPreview = async (row: Profile) => {
   }
 };
 
-const columns = createColumns({ onCopy: handleCopyLink, onPreview, onEdit: (row) => router.push({ name: 'edit-profile', params: { id: row.id } }), onDelete: handleDelete });
+const onLogs = (row: Profile) => {
+  currentProfileForLogs.value = row;
+  showSubLogsModal.value = true;
+};
+
+const columns = createColumns({
+  onCopy: handleCopyLink,
+  onPreview,
+  onLogs,
+  onEdit: (row) => router.push({ name: 'edit-profile', params: { id: row.id } }),
+  onDelete: handleDelete
+});
 
 onMounted(() => {
   fetchProfiles();
@@ -293,5 +312,10 @@ onMounted(() => {
         </n-steps>
       </n-scrollbar>
     </n-modal>
+    <subscription-log-modal
+      v-model:show="showSubLogsModal"
+      :profile-id="currentProfileForLogs?.id || null"
+      :profile-name="currentProfileForLogs?.name || null"
+    />
   </div>
 </template>
