@@ -62,12 +62,14 @@ const moveToGroupLoading = ref(false)
 // For adding a new subscription group
 const showAddGroupModal = ref(false)
 const newGroupName = ref('')
+const newGroupDescription = ref('')
 const addGroupLoading = ref(false)
 
 // For Group Management
 const showEditGroupModal = ref(false)
 const editingGroup = ref<import('@/stores/subscriptionGroups').SubscriptionGroup | null>(null)
 const editingGroupName = ref('')
+const editingGroupDescription = ref('')
 const editGroupLoading = ref(false)
 const showDropdown = ref(false)
 const dropdownX = ref(0)
@@ -884,11 +886,12 @@ const handleSaveGroup = async () => {
   }
   addGroupLoading.value = true;
   try {
-    const response = await subscriptionGroupStore.addGroup(newGroupName.value);
+    const response = await subscriptionGroupStore.addGroup(newGroupName.value, newGroupDescription.value);
     if (response.success) {
       message.success('分组创建成功');
       showAddGroupModal.value = false;
       newGroupName.value = '';
+      newGroupDescription.value = '';
     } else {
       message.error(response.message || '创建失败');
     }
@@ -906,7 +909,7 @@ const handleUpdateGroup = async () => {
   }
   editGroupLoading.value = true
   try {
-    const response = await subscriptionGroupStore.updateGroup(editingGroup.value.id, editingGroupName.value)
+    const response = await subscriptionGroupStore.updateGroup(editingGroup.value.id, editingGroupName.value, editingGroupDescription.value)
     if (response.success) {
       message.success('分组更新成功')
       showEditGroupModal.value = false
@@ -928,7 +931,7 @@ const getDropdownOptions = (group: import('@/stores/subscriptionGroups').Subscri
     { label: '分组规则', key: 'group-rules' },
     { type: 'divider', key: 'd1' },
     { label: '批量替换', key: 'batch-replace-group' },
-    { label: '重命名', key: 'rename' },
+    { label: '标签编辑', key: 'rename' },
     { label: group.is_enabled ? '禁用' : '启用', key: 'toggle' },
     { type: 'divider', key: 'd2' },
     { label: '删除', key: 'delete', props: { style: 'color: red;' } }
@@ -959,6 +962,7 @@ const handleGroupAction = (key: string) => {
     case 'rename':
       editingGroup.value = group
       editingGroupName.value = group.name
+      editingGroupDescription.value = group.description || ''
       showEditGroupModal.value = true
       break
     case 'toggle':
@@ -1809,6 +1813,14 @@ const handleSortSave = async () => {
         <n-form-item label="分组名称" required>
           <n-input v-model:value="newGroupName" placeholder="请输入分组名称" />
         </n-form-item>
+        <n-form-item label="分组备注">
+          <n-input
+            v-model:value="newGroupDescription"
+            type="textarea"
+            placeholder="为分组添加一些备注信息（可选）"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+          />
+        </n-form-item>
         <n-space justify="end">
           <n-button @click="showAddGroupModal = false">取消</n-button>
           <n-button type="primary" @click="handleSaveGroup" :loading="addGroupLoading">保存</n-button>
@@ -1819,13 +1831,21 @@ const handleSortSave = async () => {
     <n-modal
       v-model:show="showEditGroupModal"
       preset="card"
-      title="重命名分组"
+      title="编辑分组标签"
       style="width: 400px;"
       :mask-closable="false"
     >
       <n-form @submit.prevent="handleUpdateGroup">
-        <n-form-item label="新名称" required>
+        <n-form-item label="分组名称" required>
           <n-input v-model:value="editingGroupName" placeholder="请输入新的分组名称" />
+        </n-form-item>
+        <n-form-item label="分组备注">
+          <n-input
+            v-model:value="editingGroupDescription"
+            type="textarea"
+            placeholder="为分组添加一些备注信息（可选）"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+          />
         </n-form-item>
         <n-space justify="end">
           <n-button @click="showEditGroupModal = false">取消</n-button>

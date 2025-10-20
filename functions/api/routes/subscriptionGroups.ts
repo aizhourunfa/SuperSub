@@ -16,7 +16,7 @@ subscriptionGroups.get('/', manualAuthMiddleware, async (c) => {
 // POST /api/subscription-groups - 创建新分组
 subscriptionGroups.post('/', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
-    const { name } = await c.req.json<{ name: string }>();
+    const { name, description } = await c.req.json<{ name: string, description?: string }>();
 
     if (!name || name.trim().length === 0) {
         return c.json({ success: false, message: '分组名称不能为空' }, 400);
@@ -27,9 +27,9 @@ subscriptionGroups.post('/', manualAuthMiddleware, async (c) => {
 
     try {
         await c.env.DB.prepare(
-            `INSERT INTO subscription_groups (id, user_id, name, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)`
-        ).bind(id, user.id, name.trim(), now, now).run();
+            `INSERT INTO subscription_groups (id, user_id, name, description, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(id, user.id, name.trim(), description || null, now, now).run();
         
         const newGroup = await c.env.DB.prepare('SELECT * FROM subscription_groups WHERE id = ?').bind(id).first();
         return c.json({ success: true, data: newGroup }, 201);
@@ -45,17 +45,32 @@ subscriptionGroups.post('/', manualAuthMiddleware, async (c) => {
 subscriptionGroups.put('/:id', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
-    const { name } = await c.req.json<{ name: string }>();
+    const { name, description } = await c.req.json<{ name?: string, description?: string }>();
+    const now = new Date().toISOString();
+    const updates: string[] = [];
+    const bindings: (string | null)[] = [];
 
-    if (!name || name.trim().length === 0) {
-        return c.json({ success: false, message: '分组名称不能为空' }, 400);
+    if (name && name.trim().length > 0) {
+        updates.push('name = ?');
+        bindings.push(name.trim());
     }
 
-    const now = new Date().toISOString();
+    if (description !== undefined) {
+        updates.push('description = ?');
+        bindings.push(description);
+    }
+
+    if (updates.length === 0) {
+        return c.json({ success: false, message: '没有要更新的字段' }, 400);
+    }
+
+    updates.push('updated_at = ?');
+    bindings.push(now, id, user.id);
+
     try {
         const result = await c.env.DB.prepare(
-            'UPDATE subscription_groups SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?'
-        ).bind(name.trim(), now, id, user.id).run();
+            `UPDATE subscription_groups SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`
+        ).bind(...bindings).run();
 
         if (result.meta.changes === 0) {
             return c.json({ success: false, message: '分组不存在或无权修改' }, 404);
