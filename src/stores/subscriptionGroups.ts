@@ -35,21 +35,21 @@ export const useSubscriptionGroupStore = defineStore('subscriptionGroups', () =>
     }
   }
 
-  async function addGroup(name: string) {
+  async function addGroup(name: string, description?: string) {
     if (groups.value.length >= 10) {
       return { success: false, message: '最多只能创建10个分组。' };
     }
     const api = useApi();
-    const response = await api.post('/subscription-groups', { name });
+    const response = await api.post('/subscription-groups', { name, description });
     if (response.success) {
       await fetchGroups(); // Refresh the list
     }
     return response;
   }
 
-  async function updateGroup(id: string, name: string) {
+  async function updateGroup(id: string, name: string, description?: string) {
     const api = useApi();
-    const response = await api.put(`/subscription-groups/${id}`, { name });
+    const response = await api.put(`/subscription-groups/${id}`, { name, description });
     if (response.success) {
       await fetchGroups();
     }
