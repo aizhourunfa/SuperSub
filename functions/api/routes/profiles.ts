@@ -6,6 +6,7 @@ import { applySubscriptionRules, parseSubscriptionContent } from './subscription
 import { fetchSubscriptionContent } from '../utils/network';
 import { generateSubscription } from '../utils/profileGenerator';
 import { Logger } from '../utils/logger';
+import { getIpInfo, sendSubscriptionAccessNotification } from '../utils/telegram';
 
 const profiles = new Hono<{ Bindings: Env }>();
 
@@ -477,6 +478,57 @@ profiles.get('/:id/preview-nodes', async (c) => {
     }
     
     const logger = new Logger();
+
+    // --- Start of Notification ---
+    const handleAccess = async () => {
+        try {
+            const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
+            const user_agent = c.req.header('User-Agent') || 'N/A';
+            const cf = (c.req.raw as any).cf;
+            const country = cf?.country || null;
+            const city = cf?.city || null;
+
+            // Fetch additional info for notification
+            const { results: settings } = await c.env.DB.prepare(
+                `SELECT key, value FROM settings WHERE user_id = ? AND key IN ('ipinfo_token')`
+            ).bind(user.id).all<{ key: string, value: string }>();
+            const ipinfo_token = settings.find(s => s.key === 'ipinfo_token')?.value;
+
+            const { isp, asn } = await getIpInfo(ip_address, ipinfo_token);
+            const url = new URL(c.req.url);
+            const domain = url.hostname;
+
+            // Determine request type
+            const target = url.searchParams.get('target');
+            let requestType = 'preview'; // Default for preview
+            if (target) {
+                requestType = target;
+            } else if (c.req.header('User-Agent')?.toLowerCase().includes('clash')) {
+                requestType = 'clash';
+            }
+
+            // The "subscription group" is the profile name itself
+            const subscriptionGroup = profile.name;
+
+            await sendSubscriptionAccessNotification(c.env, user.id, {
+                ip: ip_address,
+                country,
+                city,
+                isp,
+                asn,
+                domain,
+                client: user_agent,
+                requestType,
+                subscriptionGroup,
+            });
+
+        } catch (e) {
+            console.error("Failed to send preview notification:", e);
+        }
+    };
+    c.executionCtx.waitUntil(handleAccess());
+    // --- End of Notification ---
+
     // The preview route now calls the centralized generator with isDryRun = true
     return generateSubscription(c, profile, true, logger);
 });

@@ -46,6 +46,11 @@ export const useApi = () => {
         clearTimeout(timeoutId);
       }
 
+      if (response.status === 401) {
+        authStore.logout();
+        throw new Error('Session expired. Please log in again.');
+      }
+
       if (response.status === 204) {
         return { success: true, data: {} as T }; // Return success with empty data
       }
