@@ -489,12 +489,7 @@ profiles.get('/:id/preview-nodes', async (c) => {
             const city = cf?.city || null;
 
             // Fetch additional info for notification
-            const { results: settings } = await c.env.DB.prepare(
-                `SELECT key, value FROM settings WHERE user_id = ? AND key IN ('ipinfo_token')`
-            ).bind(user.id).all<{ key: string, value: string }>();
-            const ipinfo_token = settings.find(s => s.key === 'ipinfo_token')?.value;
-
-            const { isp, asn } = await getIpInfo(ip_address, ipinfo_token);
+            const { isp, asn } = await getIpInfo(ip_address);
             const url = new URL(c.req.url);
             const domain = url.hostname;
 

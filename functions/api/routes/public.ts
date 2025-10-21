@@ -34,12 +34,7 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
             ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
 
             // Fetch additional info for notification
-            const { results: settings } = await c.env.DB.prepare(
-                `SELECT key, value FROM settings WHERE user_id = ? AND key IN ('ipinfo_token')`
-            ).bind(user.id).all<{ key: string, value: string }>();
-            const ipinfo_token = settings.find(s => s.key === 'ipinfo_token')?.value;
-
-            const { isp, asn } = await getIpInfo(ip_address, ipinfo_token);
+            const { isp, asn } = await getIpInfo(ip_address);
             const url = new URL(c.req.url);
             const domain = url.hostname;
             
