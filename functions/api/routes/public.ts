@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { Buffer } from 'node:buffer';
 import type { AppContext } from '../utils/types';
-import { sendTelegramMessage } from '../utils/telegram';
+import { getIpInfo, sendSubscriptionAccessNotification } from '../utils/telegram';
 import { generateSubscription } from '../utils/profileGenerator';
 import { Logger } from '../utils/logger';
 
@@ -19,27 +19,60 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
     const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE (id = ? OR alias = ?) AND user_id = ?').bind(profile_alias, profile_alias, user.id).first<any>();
     if (!profile) return c.text('Profile not found', 404);
 
-    // --- Start of Access Logging ---
-    const logAccess = async () => {
+    // --- Start of Access Logging & Notification ---
+    const handleAccess = async () => {
         try {
             const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
             const user_agent = c.req.header('User-Agent') || 'N/A';
             const cf = (c.req.raw as any).cf;
-            const country = cf?.country || 'N/A';
-            const city = cf?.city || 'N/A';
+            const country = cf?.country || null;
+            const city = cf?.city || null;
 
+            // Log access to DB
             await c.env.DB.prepare(
                 'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
             ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
+
+            // Fetch additional info for notification
+            const { results: settings } = await c.env.DB.prepare(
+                `SELECT key, value FROM settings WHERE user_id = ? AND key IN ('ipinfo_token')`
+            ).bind(user.id).all<{ key: string, value: string }>();
+            const ipinfo_token = settings.find(s => s.key === 'ipinfo_token')?.value;
+
+            const { isp, asn } = await getIpInfo(ip_address, ipinfo_token);
+            const url = new URL(c.req.url);
+            const domain = url.hostname;
+            
+            // Determine request type
+            const target = url.searchParams.get('target');
+            let requestType = 'other';
+            if (target) {
+                requestType = target;
+            } else if (c.req.header('User-Agent')?.toLowerCase().includes('clash')) {
+                requestType = 'clash';
+            }
+
+            // The "subscription group" is the profile name itself
+            const subscriptionGroup = profile.name;
+
+            await sendSubscriptionAccessNotification(c.env, user.id, {
+                ip: ip_address,
+                country,
+                city,
+                isp,
+                asn,
+                domain,
+                client: user_agent,
+                requestType,
+                subscriptionGroup,
+            });
+
         } catch (e) {
-            console.error("Failed to log subscription access:", e);
+            console.error("Failed to log subscription access or send notification:", e);
         }
     };
-    c.executionCtx.waitUntil(logAccess());
-    // --- End of Access Logging ---
-
-    // Send Telegram notification in the background
-    c.executionCtx.waitUntil(sendTelegramMessage(c.env, user.id, "Subscription accessed")); // Simplified message for now
+    c.executionCtx.waitUntil(handleAccess());
+    // --- End of Access Logging & Notification ---
 
     // 3. Generate subscription content by calling the centralized generator
     const logger = new Logger();
