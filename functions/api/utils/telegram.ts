@@ -42,32 +42,33 @@ export async function sendTelegramMessage(env: Env, userId: string, message: str
     }
 }
 
-interface IpInfoData {
-    asn?: {
-        asn: string;
-        name: string;
-    };
+interface IpApiData {
     org?: string;
+    as?: string;
+    status: string;
 }
 
-export async function getIpInfo(ip: string, token: string | undefined) {
-    if (!token) {
+export async function getIpInfo(ip: string) {
+    // Do not query for private IP addresses
+    if (!ip || ip.startsWith('127.') || ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.16.')) {
         return { isp: 'N/A', asn: 'N/A' };
     }
     try {
-        const response = await fetch(`https://ipinfo.io/${ip}?token=${token}`);
+        const response = await fetch(`http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,org,as`);
         if (!response.ok) {
-            console.error(`Failed to fetch IP info: ${response.status} ${response.statusText}`);
+            console.error(`Failed to fetch IP info from ip-api.com: ${response.status} ${response.statusText}`);
             return { isp: 'N/A', asn: 'N/A' };
         }
-        const data = await response.json() as IpInfoData;
-        const asn = data.asn ? `AS${data.asn.asn} ${data.asn.name}` : 'N/A';
+        const data = await response.json() as IpApiData;
+        if (data.status !== 'success') {
+            return { isp: 'N/A', asn: 'N/A' };
+        }
         return {
             isp: data.org || 'N/A',
-            asn: asn,
+            asn: data.as || 'N/A',
         };
     } catch (error) {
-        console.error('Error fetching IP info:', error);
+        console.error('Error fetching IP info from ip-api.com:', error);
         return { isp: 'N/A', asn: 'N/A' };
     }
 }
