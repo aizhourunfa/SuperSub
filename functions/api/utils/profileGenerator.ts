@@ -6,8 +6,9 @@ import { regenerateLink, parseNodeLinks, ParsedNode } from '../../../src/utils/n
 import { parseSubscriptionContent, userAgents } from '../routes/subscriptions';
 import { fetchSubscriptionContent } from './network';
 import { Logger } from './logger';
+import { getIpInfo, sendSubscriptionAccessNotification } from './telegram';
 
-export const generateSubscription = async (c: any, profile: any, isDryRun: boolean = false, logger: Logger) => {
+export const generateSubscription = async (c: any, profile: any, user: any, isPublic: boolean, isPreview: boolean = false, logger: Logger) => {
     const content = JSON.parse(profile.content || '{}');
     logger.info(`开始处理配置文件: "${profile.name}"`, { profileId: profile.id });
 
@@ -15,24 +16,23 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
 
     try {
         const mainLogic = async () => {
-            const userId = profile.user_id;
             const userAgent = c.req.header('User-Agent') || '';
             const query = c.req.query();
 
-            let targetClient = 'base64';
-            if (query.clash) targetClient = 'clash';
-            if (query.singbox || query.sb) targetClient = 'singbox';
-            if (query.surge) targetClient = 'surge';
-            if (query.v2ray) targetClient = 'v2ray';
+            let targetClient = query.target || 'base64'; // Prioritize 'target' query param
 
-            if (targetClient === 'base64' && !query.b64) {
-                const { results: uaMappings } = await c.env.DB.prepare('SELECT ua_keyword, client_type FROM ua_mappings WHERE is_enabled = 1').all();
-                for (const mapping of uaMappings as any[]) {
-                    if (userAgent.toLowerCase().includes(mapping.ua_keyword.toLowerCase())) {
-                        targetClient = mapping.client_type;
-                        logger.info(`通过 User-Agent 自动识别客户端为: ${targetClient}`, { userAgent });
-                        break;
-                    }
+            if (targetClient === 'base64') { // Only do UA sniffing if no explicit target is set
+                const ua = userAgent.toLowerCase();
+                if (ua.includes('clash')) {
+                    targetClient = 'clash';
+                } else if (ua.includes('sing-box') || ua.includes('singbox')) {
+                    targetClient = 'sing-box';
+                } else if (ua.includes('shadowrocket')) {
+                    targetClient = 'shadowrocket';
+                } else if (ua.includes('quantumult x') || ua.includes('quantumultx')) {
+                    targetClient = 'quantumultx';
+                } else if (ua.includes('surge')) {
+                    targetClient = 'surge';
                 }
             }
             logger.info(`最终目标客户端: ${targetClient}`);
@@ -49,7 +49,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
 
                 if (content.subscription_ids && content.subscription_ids.length > 0) {
                     logger.info('开始根据策略选择订阅源...');
-                    const strategyResult = await selectSourcesByStrategy(c, profile, isDryRun, logger);
+                    const strategyResult = await selectSourcesByStrategy(c, profile, isPreview, logger);
                     const { strategy } = strategyResult;
                     const updatedPollingState: { polling_index?: number; group_polling_indices?: Record<string, number> } = {};
                     logger.success(`订阅选择策略: ${strategy}`);
@@ -125,7 +125,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
 
                 if (content.node_ids && content.node_ids.length > 0) {
                     logger.info(`准备合并 ${content.node_ids.length} 个手动添加的节点...`);
-                    const { results: manualNodes } = await c.env.DB.prepare(`SELECT link FROM nodes WHERE id IN (${content.node_ids.map(()=>'?').join(',')}) AND user_id = ?`).bind(...content.node_ids, userId).all();
+                    const { results: manualNodes } = await c.env.DB.prepare(`SELECT link FROM nodes WHERE id IN (${content.node_ids.map(()=>'?').join(',')}) AND user_id = ?`).bind(...content.node_ids, user.id).all();
                     manualNodeLinks = (manualNodes as any[]).map(n => n.link);
                     logger.success(`成功获取 ${manualNodeLinks.length} 个手动节点的链接。`);
                 }
@@ -156,26 +156,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 }
 
             } else { // 'local' mode
-                const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, isDryRun, logger);
-                
-                if (isDryRun) {
-                    const analysis = {
-                        total: allNodes.length,
-                        protocols: allNodes.reduce((acc, node) => {
-                            const protocol = node.protocol || 'unknown';
-                            acc[protocol] = (acc[protocol] || 0) + 1;
-                            return acc;
-                        }, {} as Record<string, number>),
-                        regions: allNodes.reduce((acc, node) => {
-                            const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
-                            const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
-                            acc[region] = (acc[region] || 0) + 1;
-                            return acc;
-                        }, {} as Record<string, number>),
-                    };
-                    logger.success(`预览生成完成，共 ${allNodes.length} 个节点。`);
-                    return { type: 'json', payload: { success: true, data: { mode: 'local', nodes: allNodes, analysis: analysis, logs: logger.logs } } };
-                }
+                const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, isPreview, logger);
 
                 if (allNodes.length === 0) {
                     logger.warn('没有找到任何可用节点。');
@@ -196,7 +177,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                 }
             }
 
-            if (isDryRun) {
+            if (isPreview) {
                 if (generationMode === 'remote') {
                     const finalUrls = subconverterUrlInput ? subconverterUrlInput.split('|') : [];
                     logger.info(`远程模式预览: 准备获取并解析 ${finalUrls.length} 个链接...`, { urls: finalUrls });
@@ -256,7 +237,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
             }
 
             if (isLocalContentBase64) {
-                return { type: 'text', payload: Buffer.from(localContent, 'utf-8').toString('base64') };
+                return { type: 'text', payload: Buffer.from(localContent, 'utf-8').toString('base64'), finalRequestType: 'base64' };
             }
 
             if (subconverterUrlInput && (targetClient !== 'base64' || generationMode === 'remote')) {
@@ -290,7 +271,7 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
                     return { type: 'text', payload: `从 subconverter 生成失败: ${errorText}`, status: 502 };
                 }
                 logger.success('Subconverter 请求成功，正在返回订阅流。');
-                return { type: 'stream', payload: subResponse };
+                return { type: 'stream', payload: subResponse, finalRequestType: finalTargetClient };
             }
 
             if (!subconverterUrlInput && !localContent) {
@@ -304,6 +285,48 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
 
         result = await mainLogic();
 
+        // --- Start of Access Logging & Notification ---
+        const handleAccess = async (finalRequestType: string) => {
+            try {
+                const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
+                const user_agent = c.req.header('User-Agent') || 'N/A';
+                const cf = (c.req.raw as any).cf;
+                const country = cf?.country || null;
+                const city = cf?.city || null;
+
+                // Log access to DB only for public subscriptions
+                if (isPublic) {
+                    await c.env.DB.prepare(
+                        'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
+                    ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
+                }
+
+                // Fetch additional info for notification
+                const { isp, asn } = await getIpInfo(ip_address);
+                const url = new URL(c.req.url);
+                const domain = url.hostname;
+                
+                const subscriptionGroup = profile.name;
+
+                await sendSubscriptionAccessNotification(c.env, user.id, {
+                    ip: ip_address,
+                    country,
+                    city,
+                    isp,
+                    asn,
+                    domain,
+                    client: user_agent,
+                    requestType: finalRequestType,
+                    subscriptionGroup,
+                });
+
+            } catch (e) {
+                console.error("Failed to log subscription access or send notification:", e);
+            }
+        };
+        c.executionCtx.waitUntil(handleAccess(result.finalRequestType || 'unknown'));
+        // --- End of Access Logging & Notification ---
+
     } catch (e: any) {
         logger.error(`处理配置文件 '${profile.name}' 时发生致命错误`, { error: e.message, stack: e.stack });
         result = { type: 'text', payload: `内部服务器错误: ${e.message}`, status: 500 };
@@ -312,6 +335,26 @@ export const generateSubscription = async (c: any, profile: any, isDryRun: boole
     // 最终响应处理
     if (!result) {
         return c.text('未知错误导致没有响应生成。', 500);
+    }
+
+    if (isPreview) {
+        const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, true, logger);
+        const analysis = {
+            total: allNodes.length,
+            protocols: allNodes.reduce((acc, node) => {
+                const protocol = node.protocol || 'unknown';
+                acc[protocol] = (acc[protocol] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>),
+            regions: allNodes.reduce((acc, node) => {
+                const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
+                const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
+                acc[region] = (acc[region] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>),
+        };
+        logger.success(`预览生成完成，共 ${allNodes.length} 个节点。`);
+        return c.json({ success: true, data: { mode: content.generation_mode || 'local', nodes: allNodes, analysis: analysis, logs: logger.logs } });
     }
 
     switch (result.type) {

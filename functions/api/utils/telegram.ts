@@ -72,7 +72,6 @@ export async function getIpInfo(ip: string) {
         return { isp: 'N/A', asn: 'N/A' };
     }
 }
-
 export interface NotificationData {
     ip: string;
     country: string | null;
