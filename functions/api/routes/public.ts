@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { Buffer } from 'node:buffer';
 import type { AppContext } from '../utils/types';
-import { getIpInfo, sendSubscriptionAccessNotification } from '../utils/telegram';
 import { generateSubscription } from '../utils/profileGenerator';
 import { Logger } from '../utils/logger';
 
@@ -19,59 +18,10 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
     const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE (id = ? OR alias = ?) AND user_id = ?').bind(profile_alias, profile_alias, user.id).first<any>();
     if (!profile) return c.text('Profile not found', 404);
 
-    // --- Start of Access Logging & Notification ---
-    const handleAccess = async () => {
-        try {
-            const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
-            const user_agent = c.req.header('User-Agent') || 'N/A';
-            const cf = (c.req.raw as any).cf;
-            const country = cf?.country || null;
-            const city = cf?.city || null;
-
-            // Log access to DB
-            await c.env.DB.prepare(
-                'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
-            ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
-
-            // Fetch additional info for notification
-            const { isp, asn } = await getIpInfo(ip_address);
-            const url = new URL(c.req.url);
-            const domain = url.hostname;
-            
-            // Determine request type
-            const target = url.searchParams.get('target');
-            let requestType = 'other';
-            if (target) {
-                requestType = target;
-            } else if (c.req.header('User-Agent')?.toLowerCase().includes('clash')) {
-                requestType = 'clash';
-            }
-
-            // The "subscription group" is the profile name itself
-            const subscriptionGroup = profile.name;
-
-            await sendSubscriptionAccessNotification(c.env, user.id, {
-                ip: ip_address,
-                country,
-                city,
-                isp,
-                asn,
-                domain,
-                client: user_agent,
-                requestType,
-                subscriptionGroup,
-            });
-
-        } catch (e) {
-            console.error("Failed to log subscription access or send notification:", e);
-        }
-    };
-    c.executionCtx.waitUntil(handleAccess());
-    // --- End of Access Logging & Notification ---
-
     // 3. Generate subscription content by calling the centralized generator
+    // The notification logic is now inside generateSubscription
     const logger = new Logger();
-    return generateSubscription(c, profile, false, logger);
+    return generateSubscription(c, profile, user, true, false, logger);
 });
 
 // This route serves raw node content from a base64 encoded string
