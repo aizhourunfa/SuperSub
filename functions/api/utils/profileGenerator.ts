@@ -14,6 +14,45 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
 
     let result: any;
 
+    const handleAccess = async (finalRequestType: string) => {
+        try {
+            const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
+            const user_agent = c.req.header('User-Agent') || 'N/A';
+            const cf = (c.req.raw as any).cf;
+            const country = cf?.country || null;
+            const city = cf?.city || null;
+
+            // Log access to DB only for public subscriptions
+            if (isPublic) {
+                await c.env.DB.prepare(
+                    'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
+                ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
+            }
+
+            // Fetch additional info for notification
+            const { isp, asn } = await getIpInfo(ip_address);
+            const url = new URL(c.req.url);
+            const domain = url.hostname;
+            
+            const subscriptionGroup = profile.name;
+
+            await sendSubscriptionAccessNotification(c.env, user.id, {
+                ip: ip_address,
+                country,
+                city,
+                isp,
+                asn,
+                domain,
+                client: user_agent,
+                requestType: finalRequestType,
+                subscriptionGroup,
+            });
+
+        } catch (e) {
+            console.error("Failed to log subscription access or send notification:", e);
+        }
+    };
+
     try {
         const mainLogic = async () => {
             const userAgent = c.req.header('User-Agent') || '';
@@ -160,7 +199,7 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
 
                 if (allNodes.length === 0) {
                     logger.warn('没有找到任何可用节点。');
-                    return { type: 'text', payload: 'No nodes found for this profile.', status: 404 };
+                    return { type: 'text', payload: 'No nodes found for this profile.', status: 404, finalRequestType: targetClient };
                 }
                 
                 localContent = allNodes.map(regenerateLink).filter(Boolean).join('\n');
@@ -237,7 +276,7 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
             }
 
             if (isLocalContentBase64) {
-                return { type: 'text', payload: Buffer.from(localContent, 'utf-8').toString('base64'), finalRequestType: 'base64' };
+                return { type: 'text', payload: Buffer.from(localContent, 'utf-8').toString('base64'), finalRequestType: targetClient };
             }
 
             if (subconverterUrlInput && (targetClient !== 'base64' || generationMode === 'remote')) {
@@ -252,7 +291,7 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
 
                 if (!backend || !config) {
                     logger.error('无法找到 Subconverter 后端或配置文件。');
-                    return { type: 'text', payload: 'Subconverter 后端或配置文件未找到。', status: 500 };
+                    return { type: 'text', payload: 'Subconverter 后端或配置文件未找到。', status: 500, finalRequestType: targetClient };
                 }
                 logger.info('已找到 Subconverter 后端和配置文件。', { backendUrl: (backend as any).url, configUrl: (config as any).url });
 
@@ -268,7 +307,7 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
                 if (!subResponse.ok) {
                     const errorText = await subResponse.text();
                     logger.error('Subconverter 请求失败。', { error: errorText });
-                    return { type: 'text', payload: `从 subconverter 生成失败: ${errorText}`, status: 502 };
+                    return { type: 'text', payload: `从 subconverter 生成失败: ${errorText}`, status: 502, finalRequestType: finalTargetClient };
                 }
                 logger.success('Subconverter 请求成功，正在返回订阅流。');
                 return { type: 'stream', payload: subResponse, finalRequestType: finalTargetClient };
@@ -276,55 +315,23 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
 
             if (!subconverterUrlInput && !localContent) {
                 logger.warn('没有为指定的客户端生成任何内容。');
-                return { type: 'text', payload: '没有为指定的客户端生成任何内容。', status: 404 };
+                return { type: 'text', payload: '没有为指定的客户端生成任何内容。', status: 404, finalRequestType: targetClient };
             }
             
             logger.error('没有为指定的客户端生成任何内容。');
-            return { type: 'text', payload: '没有为指定的客户端生成任何内容。', status: 404 };
+            return { type: 'text', payload: '没有为指定的客户端生成任何内容。', status: 404, finalRequestType: targetClient };
         };
 
         result = await mainLogic();
 
         // --- Start of Access Logging & Notification ---
-        const handleAccess = async (finalRequestType: string) => {
-            try {
-                const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
-                const user_agent = c.req.header('User-Agent') || 'N/A';
-                const cf = (c.req.raw as any).cf;
-                const country = cf?.country || null;
-                const city = cf?.city || null;
-
-                // Log access to DB only for public subscriptions
-                if (isPublic) {
-                    await c.env.DB.prepare(
-                        'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
-                    ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
-                }
-
-                // Fetch additional info for notification
-                const { isp, asn } = await getIpInfo(ip_address);
-                const url = new URL(c.req.url);
-                const domain = url.hostname;
-                
-                const subscriptionGroup = profile.name;
-
-                await sendSubscriptionAccessNotification(c.env, user.id, {
-                    ip: ip_address,
-                    country,
-                    city,
-                    isp,
-                    asn,
-                    domain,
-                    client: user_agent,
-                    requestType: finalRequestType,
-                    subscriptionGroup,
-                });
-
-            } catch (e) {
-                console.error("Failed to log subscription access or send notification:", e);
+        if (result && result.finalRequestType) {
+            const userAgent = c.req.header('User-Agent') || '';
+            // Do not log for subconverter's internal requests or our own b64 requests
+            if (!userAgent.toLowerCase().includes('subconverter') && !c.req.query('b64')) {
+                c.executionCtx.waitUntil(handleAccess(result.finalRequestType));
             }
-        };
-        c.executionCtx.waitUntil(handleAccess(result.finalRequestType || 'unknown'));
+        }
         // --- End of Access Logging & Notification ---
 
     } catch (e: any) {
@@ -354,6 +361,15 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
             }, {} as Record<string, number>),
         };
         logger.success(`预览生成完成，共 ${allNodes.length} 个节点。`);
+        
+        logger.info('[预览通知流程] 准备触发预览通知...');
+        try {
+            c.executionCtx.waitUntil(handleAccess('preview'));
+            logger.success('[预览通知流程] waitUntil(handleAccess) 已成功调用，通知应在后台发送。');
+        } catch (e) {
+            logger.error('[预览通知流程] 调用 waitUntil 时发生同步错误。', { error: e });
+        }
+
         return c.json({ success: true, data: { mode: content.generation_mode || 'local', nodes: allNodes, analysis: analysis, logs: logger.logs } });
     }
 
