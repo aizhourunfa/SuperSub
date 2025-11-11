@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { nextTick } from 'vue';
 import axios from 'axios';
+import router from '@/router'; // Import the router
 import { User } from '@/types';
 
 export const useAuthStore = defineStore('auth', {
@@ -47,10 +48,21 @@ export const useAuthStore = defineStore('auth', {
         this.user = null;
         this.token = null;
         delete axios.defaults.headers.common['Authorization'];
+        
         // Wait for the next DOM update cycle to ensure the logout state has propagated
         await nextTick();
+
+        // Redirect to the login page
+        // We use a hard reload to ensure all state is cleared
+        if (router.currentRoute.value.name !== 'login') {
+          await router.push({ name: 'login' });
+        }
+
       } finally {
-        this.isLoggingOut = false; // Reset the flag after logout is complete
+        // It's better to reset the flag after the navigation is complete,
+        // but since we are pushing to a new route, the store will be re-initialized.
+        // If not using hard reload, we'd reset it in a navigation guard or after router.push.
+        this.isLoggingOut = false;
       }
     },
     updateTokenAndUser(data: { jwt: string, user: User }) {
