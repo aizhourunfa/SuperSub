@@ -163,9 +163,12 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
                 }
 
             } else { // 'local' mode
-                const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, isPreview, logger);
+                let allNodes: ParsedNode[] = [];
+                if (!isPreview) {
+                    allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, false, logger);
+                }
 
-                if (allNodes.length === 0) {
+                if (!isPreview && allNodes.length === 0) {
                     logger.warn('没有找到任何可用节点。');
                     const handleAccess = async (finalRequestType: string) => {
                         try {
@@ -277,9 +280,72 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
                     };
                     logger.success(`远程模式预览完成，最终获得 ${finalNodes.length} 个节点。`);
                     return { type: 'json', payload: { success: true, data: { mode: 'remote', nodes: finalNodes, analysis: analysis, logs: logger.logs } } };
+                } else { // local mode preview
+                    const previewNodes = await generateProfileNodes(c.env, c.executionCtx, profile, true, logger);
+                    const analysis = {
+                        total: previewNodes.length,
+                        protocols: previewNodes.reduce((acc: Record<string, number>, node: ParsedNode) => {
+                            const protocol = node.protocol || 'unknown';
+                            acc[protocol] = (acc[protocol] || 0) + 1;
+                            return acc;
+                        }, {}),
+                        regions: previewNodes.reduce((acc: Record<string, number>, node: ParsedNode) => {
+                            const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
+                            const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
+                            acc[region] = (acc[region] || 0) + 1;
+                            return acc;
+                        }, {}),
+                    };
+                    logger.success(`预览生成完成，共 ${previewNodes.length} 个节点。`);
+                    
+                    logger.info('[预览通知流程] 准备触发预览通知...');
+                    try {
+                        const handleAccess = async (finalRequestType: string) => {
+                            try {
+                                const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
+                                const user_agent = c.req.header('User-Agent') || 'N/A';
+                                const cf = (c.req.raw as any).cf;
+                                const country = cf?.country || null;
+                                const city = cf?.city || null;
+                    
+                                // Log access to DB only for public subscriptions
+                                if (isPublic) {
+                                    await c.env.DB.prepare(
+                                        'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
+                                    ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
+                                }
+                    
+                                // Fetch additional info for notification
+                                const { isp, asn } = await getIpInfo(ip_address);
+                                const url = new URL(c.req.url);
+                                const domain = url.hostname;
+                                
+                                const subscriptionGroup = profile.name;
+                    
+                                await sendSubscriptionAccessNotification(c.env, user.id, {
+                                    ip: ip_address,
+                                    country,
+                                    city,
+                                    isp,
+                                    asn,
+                                    domain,
+                                    client: user_agent,
+                                    requestType: finalRequestType,
+                                    subscriptionGroup,
+                                });
+                    
+                            } catch (e) {
+                                console.error("Failed to log subscription access or send notification:", e);
+                            }
+                        };
+                        c.executionCtx.waitUntil(handleAccess('preview'));
+                        logger.success('[预览通知流程] waitUntil(handleAccess) 已成功调用，通知应在后台发送。');
+                    } catch (e) {
+                        logger.error('[预览通知流程] 调用 waitUntil 时发生同步错误。', { error: e });
+                    }
+            
+                    return { type: 'json', payload: { success: true, data: { mode: content.generation_mode || 'local', nodes: previewNodes, analysis: analysis, logs: logger.logs } } };
                 }
-                logger.error('预览逻辑出现未处理的错误。');
-                return { type: 'text', payload: '预览逻辑出现未处理的错误。', status: 500 };
             }
 
             if (isLocalContentBase64) {
@@ -576,73 +642,8 @@ export const generateSubscription = async (c: any, profile: any, user: any, isPu
         return c.text('未知错误导致没有响应生成。', 500);
     }
 
-    if (isPreview) {
-        const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, true, logger);
-        const analysis = {
-            total: allNodes.length,
-            protocols: allNodes.reduce((acc, node) => {
-                const protocol = node.protocol || 'unknown';
-                acc[protocol] = (acc[protocol] || 0) + 1;
-                return acc;
-            }, {} as Record<string, number>),
-            regions: allNodes.reduce((acc, node) => {
-                const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
-                const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
-                acc[region] = (acc[region] || 0) + 1;
-                return acc;
-            }, {} as Record<string, number>),
-        };
-        logger.success(`预览生成完成，共 ${allNodes.length} 个节点。`);
-        
-        logger.info('[预览通知流程] 准备触发预览通知...');
-        try {
-            const handleAccess = async (finalRequestType: string) => {
-                try {
-                    const ip_address = c.req.header('CF-Connecting-IP') || 'N/A';
-                    const user_agent = c.req.header('User-Agent') || 'N/A';
-                    const cf = (c.req.raw as any).cf;
-                    const country = cf?.country || null;
-                    const city = cf?.city || null;
-        
-                    // Log access to DB only for public subscriptions
-                    if (isPublic) {
-                        await c.env.DB.prepare(
-                            'INSERT INTO subscription_access_logs (user_id, profile_id, ip_address, user_agent, country, city) VALUES (?, ?, ?, ?, ?, ?)'
-                        ).bind(user.id, profile.id, ip_address, user_agent, country, city).run();
-                    }
-        
-                    // Fetch additional info for notification
-                    const { isp, asn } = await getIpInfo(ip_address);
-                    const url = new URL(c.req.url);
-                    const domain = url.hostname;
-                    
-                    const subscriptionGroup = profile.name;
-        
-                    await sendSubscriptionAccessNotification(c.env, user.id, {
-                        ip: ip_address,
-                        country,
-                        city,
-                        isp,
-                        asn,
-                        domain,
-                        client: user_agent,
-                        requestType: finalRequestType,
-                        subscriptionGroup,
-                    });
-        
-                } catch (e) {
-                    console.error("Failed to log subscription access or send notification:", e);
-                }
-            };
-            c.executionCtx.waitUntil(handleAccess('preview'));
-            logger.success('[预览通知流程] waitUntil(handleAccess) 已成功调用，通知应在后台发送。');
-        } catch (e) {
-            logger.error('[预览通知流程] 调用 waitUntil 时发生同步错误。', { error: e });
-        }
-
-        return c.json({ success: true, data: { mode: content.generation_mode || 'local', nodes: allNodes, analysis: analysis, logs: logger.logs } });
-    }
-
+    // The isPreview logic has been moved inside mainLogic.
+    // This block is now only for handling the final response.
     switch (result.type) {
         case 'json':
             return c.json(result.payload, result.status);
